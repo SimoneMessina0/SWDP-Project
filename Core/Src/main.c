@@ -38,6 +38,7 @@
 #include "MAX30205_driver.h"
 #include "bluetooth.h"
 #include "ppg_filter.h"
+#include "vitals_processing.h"
 #include <stdint.h>
 
 /* USER CODE END Includes */
@@ -102,6 +103,11 @@ uint8_t raw_temp[2];
 
 uint16_t skin_timer = 0;
 bool     conversion_status = 0;
+
+// Risultati correnti dei vitali calcolati in hardware
+static Vitals_Results vitals_results;
+static uint16_t vitals_report_decimation_counter = 0;
+#define VITALS_REPORT_DECIMATION 100U  /* invia/aggiorna 1 volta al secondo @100Hz */
 
 uint8_t read_ptr_fifo;
 
@@ -194,6 +200,7 @@ int main(void)
   // Initialize all hardware peripherals (ble, usb, nand flash, imu)
   BLE_Initialize();
   PPG_Filter_Init();
+  Vitals_Init();
   MX_USB_Device_Init();
   HAL_Delay(1000);
 
