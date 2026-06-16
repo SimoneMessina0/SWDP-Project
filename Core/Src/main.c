@@ -873,6 +873,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       skin_timer = 0;
     else skin_timer++;
 
+    uint8_t last_sample_idx = (read_ptr_fifo + 31) % 32;
+    uint32_t raw_red_sample = hr_data[0][last_sample_idx];
+    uint32_t raw_ir_sample  = hr_data[1][last_sample_idx];
+    Vitals_ProcessSample(raw_red_sample, raw_ir_sample);
     // BLE Data sending: Individual Packets (decimated by 2 to prevent BLE over-the-air buffer overflow)
     static uint8_t ble_decimation_counter = 0;
     ble_decimation_counter++;
@@ -888,6 +892,20 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         BLE_SendPacket(DATA_TYPE_PPG, (uint8_t*)&ppg_filtered_ir, sizeof(float32_t));
         BLE_SendPacket(DATA_TYPE_TEMP, raw_temp, 2);
     }
+
+    vitals_report_decimation_counter++;
+      if (vitals_report_decimation_counter >= VITALS_REPORT_DECIMATION) {
+          vitals_report_decimation_counter = 0;
+          Vitals_GetAllResults(&vitals_results);
+          if (vitals_results.hr_valid)    BLE_SendPacket(DATA_TYPE_HR,    (uint8_t*)&vitals_results.hr_bpm,       sizeof(float));
+          if (vitals_results.spo2_valid)  BLE_SendPacket(DATA_TYPE_SPO2,  (uint8_t*)&vitals_results.spo2_percent, sizeof(float));
+          if (vitals_results.hrv_valid) {
+              float hrv_payload[2] = { vitals_results.hrv_sdnn_ms, vitals_results.hrv_rmssd_ms };
+              BLE_SendPacket(DATA_TYPE_HRV, (uint8_t*)hrv_payload, sizeof(hrv_payload));
+          }
+          if (vitals_results.rr_valid)     BLE_SendPacket(DATA_TYPE_RR,     (uint8_t*)&vitals_results.rr_brpm, sizeof(float));
+          if (vitals_results.vo2max_valid) BLE_SendPacket(DATA_TYPE_VO2MAX, (uint8_t*)&vitals_results.vo2max,  sizeof(float));
+      }
 
     // Save the raw data in memory
     // Create timestamp with sampling frequency @100 Hz
