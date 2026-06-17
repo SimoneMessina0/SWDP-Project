@@ -475,7 +475,7 @@ int program_load(column_address_t column, const uint8_t *data_in, size_t write_l
 
     int ret = spi_write(tx_data, 3, timeout);
     if (SPI_NAND_RET_OK == ret) {
-        ret = spi_write(data_in, write_len, timeout);
+        ret = spi_write((uint8_t *)data_in, write_len, timeout);
     }
 
     cs_deselect();

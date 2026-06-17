@@ -25,7 +25,7 @@ typedef enum {
     DATA_TYPE_IMU_GYROSCOPE,        // Indicates gyroscope data from an IMU
     DATA_TYPE_PPG,                  // Indicates temp data from an IMU
     DATA_TYPE_TEMP,                 // Indicates gyroscope data from an IMU
-    DATA_TYPE_COMBINED              // Combined sensor data
+    DATA_TYPE_COMBINED,              // Combined sensor data
     DATA_TYPE_HR,        //float bpm 
     DATA_TYPE_SPO2,      // float percentuale 
     DATA_TYPE_HRV,       // 2x float [sdnn_ms, rmssd_ms] 

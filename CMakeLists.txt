@@ -60,6 +60,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/MAX30101_driver.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/MAX30205_driver.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/ppg_filter.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/vitals_processing.c
     # Add user defined sources
 )
 
