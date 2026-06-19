@@ -238,20 +238,17 @@ void BLE_SendPacket(BLE_DataType ble_data_type, uint8_t* data_buffer, uint8_t da
 
     // Byte 1: Data type identifier
     switch (ble_data_type) {
-        case DATA_TYPE_IMU_ACCELERATION:
-            ble_packet[1] = 'A';
-            break;
-        case DATA_TYPE_IMU_GYROSCOPE:
-            ble_packet[1] = 'G';
-            break;
         case DATA_TYPE_PPG:
             ble_packet[1] = 'P';
             break;
-        case DATA_TYPE_TEMP:
-            ble_packet[1] = 'T';
+        case DATA_TYPE_HR:
+            ble_packet[1] = 'H';
             break;
-        case DATA_TYPE_COMBINED:
-            ble_packet[1] = 'C';
+        case DATA_TYPE_IMU_COMBINED:
+            ble_packet[1] = 'I';
+            break;
+        case DATA_TYPE_SLOW_VITALS:
+            ble_packet[1] = 'S';
             break;
         default:
             ble_packet[1] = 'U'; // Unknown data type

@@ -8,7 +8,7 @@
  * TIM2 IRQ callback (100 Hz) senza allocazioni dinamiche.
  *
  * Pipeline prevista (chiamata ad ogni nuovo campione, cioe' ad ogni
- * tick del TIM2 a 100 Hz):
+ * tick del TIM2 a 800 Hz):
  *
  *   raw_IR, raw_RED  --(gia' letti da MAX30101_Read_Data)-->
  *     Vitals_ProcessSample(raw_red, raw_ir)
@@ -21,9 +21,7 @@
  * Le funzioni *_GetLatest() restituiscono l'ultimo valore stabile calcolato
  * (NaN/valore di default se non ancora disponibile un risultato valido).
  *
- * @note Tutte le costanti di soglia (peak detection, finestre) sono state
- * scelte per un fs di acquisizione PPG di 100 Hz, coerente con TIM2
- * (period=99, prescaler=7200-1 @72MHz APB -> 100Hz) usato nel progetto.
+ * scelte per un fs di acquisizione PPG di 800 Hz, coerente con TIM2.
  */
 
 #ifndef VITALS_PROCESSING_H
@@ -40,7 +38,7 @@ extern "C" {
  *  CONFIGURAZIONE GENERALE
  * ======================================================================== */
 
-#define VITALS_FS_HZ                100.0f   /* Frequenza di campionamento PPG (Hz), deve combaciare con TIM2 */
+#define VITALS_FS_HZ                800.0f   /* Frequenza di campionamento PPG (Hz), deve combaciare con TIM2 */
 
 /* --- HR / peak detection --- */
 #define VITALS_HR_MIN_BPM           35.0f
@@ -52,7 +50,7 @@ extern "C" {
 #define VITALS_HRV_NN_BUFFER_LEN    30U   /* numero di intervalli NN (RR-to-RR) memorizzati per SDNN/RMSSD */
 
 /* --- SpO2 --- */
-#define VITALS_SPO2_WINDOW_SAMPLES  100U  /* finestra (campioni) su cui calcolare AC/DC per ogni stima SpO2, ~1s @100Hz */
+#define VITALS_SPO2_WINDOW_SAMPLES  800U  /* finestra (campioni) su cui calcolare AC/DC per ogni stima SpO2, ~1s @800Hz */
 
 /* --- RR (respiration) --- */
 #define VITALS_RESP_BUFFER_LEN      512U  /* buffer campioni decimati per stima respiro (~ alcuni minuti a fs decimata) */
@@ -68,12 +66,12 @@ typedef struct {
     float    hrv_sdnn_ms;     /* SDNN in millisecondi, -1 se non disponibile */
     float    hrv_rmssd_ms;    /* RMSSD in millisecondi, -1 se non disponibile */
     float    rr_brpm;         /* Respiri per minuto, -1 se non disponibile */
-    float    vo2max;          /* mL/(kg*min), -1 se non disponibile */
+
     bool     hr_valid;
     bool     spo2_valid;
     bool     hrv_valid;
     bool     rr_valid;
-    bool     vo2max_valid;
+
 } Vitals_Results;
 
 /* ========================================================================
@@ -87,7 +85,7 @@ typedef struct {
 void Vitals_Init(void);
 
 /**
- * @brief Da chiamare ad ogni nuovo campione disponibile (100 Hz), con i
+ * @brief Da chiamare ad ogni nuovo campione disponibile (800 Hz), con i
  * valori RAW (non filtrati) letti dal FIFO del MAX30101.
  *
  * Esegue, in ordine:
@@ -135,27 +133,7 @@ bool Vitals_GetHRV(float *sdnn_ms, float *rmssd_ms);
  */
 bool Vitals_GetRR(float *rr_brpm);
 
-/**
- * @brief Imposta manualmente HR a riposo (bpm), misurata es. al risveglio.
- * Tipicamente da comando BLE/UART ("SET_HR_REST,<valore>").
- */
-void Vitals_SetHRRest(float hr_rest_bpm);
 
-/**
- * @brief Imposta manualmente HR massima/sub-massimale misurata durante test
- * di sforzo. Tipicamente da comando BLE/UART ("SET_HR_MAX,<valore>").
- */
-void Vitals_SetHRMax(float hr_max_bpm);
-
-/**
- * @brief Calcola la VO2Max stimata con la formula di Uth-Sorensen:
- *   VO2max = 15.3 * (HR_max / HR_rest)
- * Richiede che sia HR_rest che HR_max siano stati impostati con
- * Vitals_SetHRRest()/Vitals_SetHRMax() (tramite comando esterno).
- * @param vo2max Puntatore di output, mL/(kg*min).
- * @return true se entrambi HR_rest e HR_max sono stati impostati e validi.
- */
-bool Vitals_GetVO2Max(float *vo2max);
 
 /**
  * @brief Helper di comodo: riempie una struct Vitals_Results con tutti gli

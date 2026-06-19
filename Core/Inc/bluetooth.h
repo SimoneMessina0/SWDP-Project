@@ -14,23 +14,17 @@
 
 // --- Constants Definitions ---
 // These are standard values used for the BLE communication packets and timeouts.
-#define PACKET_LENGTH 20    // Maximum length of a data packet
+#define PACKET_LENGTH 24    // Maximum length of a data packet
 #define TEXT_LENGTH 500     // Maximum length for text strings
 #define UART_TIMEOUT 1000   // Timeout in milliseconds for UART operations
 
 // --- Enumerations ---
 // This enum defines the possible types of data packets that can be sent.
 typedef enum {
-    DATA_TYPE_IMU_ACCELERATION,     // Indicates acceleration data from an IMU
-    DATA_TYPE_IMU_GYROSCOPE,        // Indicates gyroscope data from an IMU
-    DATA_TYPE_PPG,                  // Indicates temp data from an IMU
-    DATA_TYPE_TEMP,                 // Indicates gyroscope data from an IMU
-    DATA_TYPE_COMBINED,              // Combined sensor data
-    DATA_TYPE_HR,        //float bpm 
-    DATA_TYPE_SPO2,      // float percentuale 
-    DATA_TYPE_HRV,       // 2x float [sdnn_ms, rmssd_ms] 
-    DATA_TYPE_RR,        // float resp/min 
-    DATA_TYPE_VO2MAX     //float mL/(kg*min) 
+    DATA_TYPE_PPG,                  // Indicates PPG data from MAX30101
+    DATA_TYPE_HR,                   // float bpm 
+    DATA_TYPE_IMU_COMBINED,         // Combined IMU (Acceleration + Gyroscope)
+    DATA_TYPE_SLOW_VITALS           // Slow vitals (SpO2, HRV, RR, Temp)
 } BLE_DataType;
 
 // --- Function Prototypes ---

@@ -38,12 +38,11 @@ static float32_t ir_filter_state[4 * VITALS_FILTER_STAGES];
 static arm_biquad_casd_df1_inst_f32 red_filter_inst;
 static arm_biquad_casd_df1_inst_f32 ir_filter_inst;
 
-/* Stage 1: 2nd-order Butterworth LPF (fc = 5.0 Hz, fs = 100.0 Hz)
- * Stage 2: 2nd-order Butterworth HPF (fc = 0.5 Hz, fs = 100.0 Hz)
- * (identici a ppg_filter.c) */
+/* Stage 1: 2nd-order Butterworth LPF (fc = 5.0 Hz, fs = 800.0 Hz)
+ * Stage 2: 2nd-order Butterworth HPF (fc = 0.5 Hz, fs = 800.0 Hz) */
 static float32_t cardiac_filter_coeffs[5 * VITALS_FILTER_STAGES] = {
-    0.020083366f, 0.040166732f, 0.020083366f, 1.561018076f, -0.641351538f,
-    0.988954132f, -1.977908263f, 0.988954132f, 1.977786373f, -0.978029518f
+    0.000375087f, 0.000750174f, 0.000375087f, 1.9444774f, -0.9459778f,
+    0.9972270f, -1.9944540f, 0.9972270f, 1.9944464f, -0.9944618f
 };
 
 /* ========================================================================
@@ -56,23 +55,21 @@ static float32_t cardiac_filter_coeffs[5 * VITALS_FILTER_STAGES] = {
 static float32_t resp_filter_state[4 * VITALS_FILTER_STAGES];
 static arm_biquad_casd_df1_inst_f32 resp_filter_inst;
 
-/* Coefficienti Butterworth 2 stage, fc1=0.4Hz (LPF) + fc2=0.1Hz (HPF), fs=100Hz.
- * Verificati con scipy.signal.butter(2, fc/(fs/2)) e convertiti in formato
- * CMSIS biquad (a1, a2 negati rispetto alla convenzione scipy). */
+/* Coefficienti Butterworth 2 stage, fc1=0.4Hz (LPF) + fc2=0.1Hz (HPF), fs=800Hz. */
 static float32_t resp_filter_coeffs[5 * VITALS_FILTER_STAGES] = {
-    /* Stage 1: LPF Butterworth, fc = 0.4 Hz, fs = 100 Hz */
-    0.0001551f,  0.0003103f,  0.0001551f,  1.9644606f, -0.9650812f,
-    /* Stage 2: HPF Butterworth, fc = 0.1 Hz, fs = 100 Hz */
-    0.9955670f, -1.9911339f,  0.9955670f,  1.9911143f, -0.9911536f
+    /* Stage 1: LPF Butterworth, fc = 0.4 Hz, fs = 800 Hz */
+    0.00000246f, 0.00000492f, 0.00000246f, 1.9955571f, -0.9955669f,
+    /* Stage 2: HPF Butterworth, fc = 0.1 Hz, fs = 800 Hz */
+    0.9994448f, -1.998889f, 0.9994448f, 1.998890f, -0.998890f
 };
 
 /* ========================================================================
  *  STATO INTERNO: DC TRACKER (media mobile esponenziale)
  * ======================================================================== */
 
-/* Costante di tempo della EMA per la baseline DC: tau ~ 1.6s @100Hz
- * alpha = 1 - exp(-1/(fs*tau)) circa; usiamo un valore fisso pratico. */
-#define VITALS_DC_ALPHA   0.02f
+/* Costante di tempo della EMA per la baseline DC: tau ~ 1.6s
+ * alpha = 1 - exp(-1/(fs*tau)) circa; scalato per 800Hz */
+#define VITALS_DC_ALPHA   0.0025f
 
 static float dc_red = 0.0f;
 static float dc_ir  = 0.0f;
@@ -84,7 +81,7 @@ static bool  dc_initialized = false;
 
 /* Soglia adattiva: frazione dell'ampiezza picco-picco recente del segnale AC */
 #define VITALS_PEAK_THRESHOLD_RATIO   0.35f
-#define VITALS_PEAK_ENV_ALPHA         0.05f   /* EMA per inviluppo ampiezza AC */
+#define VITALS_PEAK_ENV_ALPHA         0.00625f   /* EMA per inviluppo ampiezza AC (scalato per 800Hz) */
 
 static float   ac_ir_envelope = 0.0f;     /* inviluppo (ampiezza) stimato del segnale AC IR */
 static float   prev_sample_1 = 0.0f;      /* campione precedente (per derivata/discesa) */
@@ -127,20 +124,13 @@ static float    resp_buffer[VITALS_RESP_BUFFER_LEN];
 static uint16_t resp_write_idx = 0;
 static uint16_t resp_count = 0;         /* quanti campioni validi sono presenti nel buffer (satura) */
 static uint8_t  resp_decim_counter = 0;
-#define VITALS_RESP_DECIMATION  10U      /* 100Hz / 10 = 10 Hz */
+#define VITALS_RESP_DECIMATION  80U      /* 800Hz / 80 = 10 Hz */
 #define VITALS_RESP_FS_HZ       (VITALS_FS_HZ / (float)VITALS_RESP_DECIMATION)
 
 static float current_rr_brpm = -1.0f;
 static bool  current_rr_valid = false;
 
-/* ========================================================================
- *  STATO INTERNO: VO2MAX
- * ======================================================================== */
 
-static float hr_rest_bpm = -1.0f;
-static float hr_max_bpm  = -1.0f;
-static bool  hr_rest_set = false;
-static bool  hr_max_set  = false;
 
 /* ========================================================================
  *  FUNZIONI PRIVATE
@@ -379,10 +369,7 @@ void Vitals_Init(void)
     current_rr_brpm = -1.0f;
     current_rr_valid = false;
 
-    hr_rest_bpm = -1.0f;
-    hr_max_bpm = -1.0f;
-    hr_rest_set = false;
-    hr_max_set = false;
+
 }
 
 void Vitals_ProcessSample(uint32_t raw_red, uint32_t raw_ir)
@@ -489,35 +476,7 @@ bool Vitals_GetRR(float *rr_brpm)
     return current_rr_valid;
 }
 
-void Vitals_SetHRRest(float hr_rest_bpm_in)
-{
-    if (hr_rest_bpm_in >= VITALS_HR_MIN_BPM && hr_rest_bpm_in <= VITALS_HR_MAX_BPM) {
-        hr_rest_bpm = hr_rest_bpm_in;
-        hr_rest_set = true;
-    }
-}
 
-void Vitals_SetHRMax(float hr_max_bpm_in)
-{
-    if (hr_max_bpm_in >= VITALS_HR_MIN_BPM && hr_max_bpm_in <= VITALS_HR_MAX_BPM) {
-        hr_max_bpm = hr_max_bpm_in;
-        hr_max_set = true;
-    }
-}
-
-bool Vitals_GetVO2Max(float *vo2max)
-{
-    if (vo2max == NULL) return false;
-
-    if (!hr_rest_set || !hr_max_set || hr_rest_bpm <= 0.0f) {
-        *vo2max = -1.0f;
-        return false;
-    }
-
-    /* Formula di Uth-Sorensen: VO2max ~= 15.3 * (HR_max / HR_rest) */
-    *vo2max = 15.3f * (hr_max_bpm / hr_rest_bpm);
-    return true;
-}
 
 void Vitals_GetAllResults(Vitals_Results *out)
 {
@@ -527,5 +486,5 @@ void Vitals_GetAllResults(Vitals_Results *out)
     out->spo2_valid    = Vitals_GetSpO2(&out->spo2_percent);
     out->hrv_valid     = Vitals_GetHRV(&out->hrv_sdnn_ms, &out->hrv_rmssd_ms);
     out->rr_valid      = Vitals_GetRR(&out->rr_brpm);
-    out->vo2max_valid  = Vitals_GetVO2Max(&out->vo2max);
+
 }

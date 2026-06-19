@@ -102,12 +102,11 @@ uint8_t raw_health[3 * NUMBER_OF_ACTIVE_LEDS * 32] = {0};
 uint8_t raw_temp[2];
 
 uint16_t skin_timer = 0;
-bool     conversion_status = 0;
 
 // Risultati correnti dei vitali calcolati in hardware
 static Vitals_Results vitals_results;
 static uint16_t vitals_report_decimation_counter = 0;
-#define VITALS_REPORT_DECIMATION 100U  /* invia/aggiorna 1 volta al secondo @100Hz */
+#define VITALS_REPORT_DECIMATION 800U  /* invia/aggiorna 1 volta al secondo @800Hz */
 
 uint8_t read_ptr_fifo;
 
@@ -132,6 +131,8 @@ int exit_flag = 0;
 // Timestamp variables //
 Time_Struct timestamp;
 uint16_t tim = 0;
+
+volatile bool timer_data_ready = false;
 
 /* USER CODE END PV */
 
@@ -228,11 +229,11 @@ int main(void)
 
   if(MAX30101_Init() == 1) {
     uint8_t conf_fifo, conf_mode, spo2_conf, conf_led_pulse[LED_PULSE_N_REG], conf_multi_led[MULTI_LED_N_REG]; 
-    conf_fifo = 0b01010000;
+    conf_fifo = 0b00010000;
     conf_mode = 0b00000011;
     // spo2_conf = 0b01101111;
     // modifica ADC resolution al minimo (15 bit) per ridurre intensità fascio -> come ha consigliato Ilaria
-    spo2_conf = 0b01101100;
+    spo2_conf = 0b01110000;
     // conf_led_pulse[0] = 0x3F;
     // conf_led_pulse[1] = 0x3F;
     // modificare da 12mA a 6mA -> come ha consigliato Ilaria
@@ -273,12 +274,113 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    if (timer_data_ready) {
+        timer_data_ready = false;
+
+        // --- Data Acquisition ---
+        if(skin_timer == 0){
+            MAX30205_Start_Conversion();
+        } else if(skin_timer == 4000){
+            MAX30205_Read_Temp(&skin_temp, raw_temp, 1);
+        }
+        
+        static uint8_t imu_read_decimation = 0;
+        imu_read_decimation++;
+        if (imu_read_decimation >= 8) {
+            imu_read_decimation = 0;
+            IMU_ReadAccelerometerData(&accelerometer_data, raw_accelerometer);
+            IMU_ReadGyroscopeData(&gyroscope_data, raw_gyroscope);
+        }
+
+        MAX30101_Read_Data(hr_data, raw_health, &read_ptr_fifo);
+
+        if(skin_timer == 4000)
+            skin_timer = 0;
+        else skin_timer++;
+
+        uint8_t last_sample_idx = (read_ptr_fifo + 31) % 32;
+        uint32_t raw_red_sample = hr_data[0][last_sample_idx];
+        uint32_t raw_ir_sample  = hr_data[1][last_sample_idx];
+
+        // --- DSP Vitals Processing ---
+        Vitals_ProcessSample(raw_red_sample, raw_ir_sample);
+        float32_t ppg_filtered_ir = PPG_Filter_ProcessSample((float32_t)raw_ir_sample);
+
+        // --- BLE Transmission (Grouped by Frequency) ---
+        // 100 Hz: ACCEL + GYRO (decimato di 8)
+        static uint8_t ble_acc_gyro_decimation = 0;
+        ble_acc_gyro_decimation++;
+        if (ble_acc_gyro_decimation >= 8) {
+            ble_acc_gyro_decimation = 0;
+            uint8_t imu_payload[12];
+            memcpy(&imu_payload[0], raw_accelerometer, 6);
+            memcpy(&imu_payload[6], raw_gyroscope, 6);
+            BLE_SendPacket(DATA_TYPE_IMU_COMBINED, imu_payload, 12);
+        }
+
+        // 25 Hz: PPG (decimato di 32)
+        static uint8_t ble_ppg_decimation = 0;
+        ble_ppg_decimation++;
+        if (ble_ppg_decimation >= 32) {
+            ble_ppg_decimation = 0;
+            BLE_SendPacket(DATA_TYPE_PPG, (uint8_t*)&ppg_filtered_ir, sizeof(float32_t));
+        }
+
+        // 1 Hz: HR
+        static uint16_t vitals_read_counter = 0;
+        vitals_read_counter++;
+        if (vitals_read_counter >= 800) {
+            vitals_read_counter = 0;
+            Vitals_GetAllResults(&vitals_results);
+            if (vitals_results.hr_valid) {
+                BLE_SendPacket(DATA_TYPE_HR, (uint8_t*)&vitals_results.hr_bpm, sizeof(float));
+            }
+        }
+
+        // 0.2 Hz (ogni 5s): SpO2, HRV SDNN, HRV RMSSD, RR, Temp
+        static uint16_t slow_vitals_report_counter = 0;
+        slow_vitals_report_counter++;
+        if (slow_vitals_report_counter >= 4000) {
+            slow_vitals_report_counter = 0;
+            Vitals_GetAllResults(&vitals_results);
+            
+            uint8_t slow_payload[18] = {0};
+            if (vitals_results.spo2_valid) memcpy(&slow_payload[0], &vitals_results.spo2_percent, 4);
+            if (vitals_results.hrv_valid) {
+                memcpy(&slow_payload[4], &vitals_results.hrv_sdnn_ms, 4);
+                memcpy(&slow_payload[8], &vitals_results.hrv_rmssd_ms, 4);
+            }
+            if (vitals_results.rr_valid) memcpy(&slow_payload[12], &vitals_results.rr_brpm, 4);
+            memcpy(&slow_payload[16], raw_temp, 2);
+
+            BLE_SendPacket(DATA_TYPE_SLOW_VITALS, slow_payload, 18);
+        }
+
+        // --- NAND Flash Memory Write ---
+        timestamp.sss = (tim * 10) / 8;
+        if(tim == 800) {
+            timestamp.ss=timestamp.ss+1;
+            timestamp.sss= 0;
+            tim = 0;
+            if (timestamp.ss==60){
+                timestamp.mm=timestamp.mm+1;
+                timestamp.ss=0;
+                if (timestamp.mm==60){
+                    timestamp.hh=timestamp.hh+1;
+                    timestamp.mm=0;
+                }
+            }
+        }
+        tim++;
+
+        write_packet(sample, timestamp, raw_gyroscope, raw_accelerometer, raw_health , raw_temp, NAND_packet);
+        sample++;
+        write_memory();
+    } // end timer_data_ready
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-
-		//LED_Toggle(LED_GREEN);
-		//HAL_Delay(1000);
 
 	  switch(current_state)
 	  {
@@ -299,8 +401,7 @@ int main(void)
 	  		break;
 
 	  	  case STATE_ACQUISITION:
-	  		   // All data acquisition is handled by the timer interrupt
-
+	  		   // All data acquisition is handled by the timer flag above
 			break;
 
 	  	  case STATE_USB_CONNECTED:
@@ -317,6 +418,7 @@ int main(void)
 	  		 break;
 	  }
 
+      __WFI(); // Enter low power sleep until the next interrupt wakes the CPU
   }
   /* USER CODE END 3 */
 }
@@ -641,7 +743,7 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 7200-1;
+  htim2.Init.Prescaler = 900-1;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 99;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -859,78 +961,8 @@ static void MX_GPIO_Init(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
 	if(htim == &htim2){
-    if(skin_timer == 0){
-      MAX30205_Start_Conversion();
-      conversion_status = true;
-    }
-    // Read sensor data from the IMU
-    IMU_ReadAccelerometerData(&accelerometer_data, raw_accelerometer);
-    IMU_ReadGyroscopeData(&gyroscope_data, raw_gyroscope);
-    MAX30101_Read_Data(hr_data, raw_health, &read_ptr_fifo);
-    if(conversion_status)
-      MAX30205_Read_Temp(&skin_temp, raw_temp, conversion_status);
-    if(skin_timer == 500)
-      skin_timer = 0;
-    else skin_timer++;
-
-    uint8_t last_sample_idx = (read_ptr_fifo + 31) % 32;
-    uint32_t raw_red_sample = hr_data[0][last_sample_idx];
-    uint32_t raw_ir_sample  = hr_data[1][last_sample_idx];
-    Vitals_ProcessSample(raw_red_sample, raw_ir_sample);
-    // BLE Data sending: Individual Packets (decimated by 2 to prevent BLE over-the-air buffer overflow)
-    static uint8_t ble_decimation_counter = 0;
-    ble_decimation_counter++;
-    if (ble_decimation_counter >= 2) {
-        ble_decimation_counter = 0;
-
-        // Extract IR from SLOT2 (index 1) and filter it
-        uint8_t last_sample_idx = (read_ptr_fifo + 31) % 32;
-        float32_t ppg_filtered_ir = PPG_Filter_ProcessSample((float32_t)hr_data[1][last_sample_idx]);
-
-        BLE_SendPacket(DATA_TYPE_IMU_ACCELERATION, raw_accelerometer, 6);
-        BLE_SendPacket(DATA_TYPE_IMU_GYROSCOPE, raw_gyroscope, 6);
-        BLE_SendPacket(DATA_TYPE_PPG, (uint8_t*)&ppg_filtered_ir, sizeof(float32_t));
-        BLE_SendPacket(DATA_TYPE_TEMP, raw_temp, 2);
-    }
-
-    vitals_report_decimation_counter++;
-      if (vitals_report_decimation_counter >= VITALS_REPORT_DECIMATION) {
-          vitals_report_decimation_counter = 0;
-          Vitals_GetAllResults(&vitals_results);
-          if (vitals_results.hr_valid)    BLE_SendPacket(DATA_TYPE_HR,    (uint8_t*)&vitals_results.hr_bpm,       sizeof(float));
-          if (vitals_results.spo2_valid)  BLE_SendPacket(DATA_TYPE_SPO2,  (uint8_t*)&vitals_results.spo2_percent, sizeof(float));
-          if (vitals_results.hrv_valid) {
-              float hrv_payload[2] = { vitals_results.hrv_sdnn_ms, vitals_results.hrv_rmssd_ms };
-              BLE_SendPacket(DATA_TYPE_HRV, (uint8_t*)hrv_payload, sizeof(hrv_payload));
-          }
-          if (vitals_results.rr_valid)     BLE_SendPacket(DATA_TYPE_RR,     (uint8_t*)&vitals_results.rr_brpm, sizeof(float));
-          if (vitals_results.vo2max_valid) BLE_SendPacket(DATA_TYPE_VO2MAX, (uint8_t*)&vitals_results.vo2max,  sizeof(float));
-      }
-
-    // Save the raw data in memory
-    // Create timestamp with sampling frequency @100 Hz
-    timestamp.sss=tim*10;
-    if(timestamp.sss == 1000) {
-      timestamp.ss=timestamp.ss+1;
-      timestamp.sss= 0;
-      tim = 0;
-      if (timestamp.ss==60){
-        timestamp.mm=timestamp.mm+1;
-        timestamp.ss=0;
-        if (timestamp.mm==60){
-          timestamp.hh=timestamp.hh+1;
-          timestamp.mm=0;
-        }
-      }
-    }
-
-    tim++;
-
-    // Create the data packet to be saved in memory
-    write_packet(sample, timestamp, raw_gyroscope, raw_accelerometer, raw_health , raw_temp, NAND_packet);
-    sample++;
-    // Write data packet in memory
-        write_memory();
+        // Flag that it's time to process. The while(1) loop will handle everything else.
+        timer_data_ready = true;
 	}
 }
 
