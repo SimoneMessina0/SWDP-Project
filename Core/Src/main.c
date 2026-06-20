@@ -304,7 +304,7 @@ int main(void)
 
         // --- DSP Vitals Processing ---
         Vitals_ProcessSample(raw_red_sample, raw_ir_sample);
-        float32_t ppg_filtered_ir = PPG_Filter_ProcessSample((float32_t)raw_ir_sample);
+        float32_t ppg_filtered_ir = -PPG_Filter_ProcessSample((float32_t)raw_ir_sample);
 
         // --- BLE Transmission (Grouped by Frequency) ---
         // 100 Hz: ACCEL + GYRO (decimato di 8)

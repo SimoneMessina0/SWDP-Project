@@ -24,26 +24,58 @@
 #include <string.h>
 
 /* ========================================================================
- *  FILTRI BIQUAD PER CANALE (passa-banda cardiaco 0.5 - 5 Hz)
- *  Stessi coefficienti di stage che ppg_filter.c usa per il canale IR
- *  (Butterworth LPF 5Hz + HPF 0.5Hz a cascata), replicati qui per RED e IR
- *  in istanze indipendenti, cosi' il modulo vitals e' autosufficiente e
- *  non dipende dallo stato interno di ppg_filter.c.
+ *  FILTRI BIQUAD PER CANALE (passa-banda cardiaco 0.6 - 10 Hz)
+ *  Generazione dinamica per 12esimo ordine (6 biquad LPF + 6 biquad HPF)
  * ======================================================================== */
 
-#define VITALS_FILTER_STAGES 2
+#define VITALS_BUTTERWORTH_ORDER 12
+#define VITALS_FILTER_STAGES (VITALS_BUTTERWORTH_ORDER) // 6 stadi LPF + 6 stadi HPF = 12 stadi totali
 
 static float32_t red_filter_state[4 * VITALS_FILTER_STAGES];
 static float32_t ir_filter_state[4 * VITALS_FILTER_STAGES];
 static arm_biquad_casd_df1_inst_f32 red_filter_inst;
 static arm_biquad_casd_df1_inst_f32 ir_filter_inst;
 
-/* Stage 1: 2nd-order Butterworth LPF (fc = 5.0 Hz, fs = 800.0 Hz)
- * Stage 2: 2nd-order Butterworth HPF (fc = 0.5 Hz, fs = 800.0 Hz) */
-static float32_t cardiac_filter_coeffs[5 * VITALS_FILTER_STAGES] = {
-    0.000375087f, 0.000750174f, 0.000375087f, 1.9444774f, -0.9459778f,
-    0.9972270f, -1.9944540f, 0.9972270f, 1.9944464f, -0.9944618f
-};
+static float32_t cardiac_filter_coeffs[5 * VITALS_FILTER_STAGES];
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+/* Calcola i coefficienti di un filtro Butterworth e li salva nel formato CMSIS-DSP biquad */
+static void compute_butterworth_biquads(int order, double fc, double fs, bool is_highpass, float32_t* coeffs_out) {
+    int num_biquads = order / 2;
+    double wa = tan(M_PI * fc / fs);
+    double wa2 = wa * wa;
+
+    for (int k = 1; k <= num_biquads; k++) {
+        double theta = M_PI * (2.0 * k - 1.0 + order) / (2.0 * order);
+        double cos_theta = cos(theta);
+        
+        double a0 = 1.0 - 2.0 * wa * cos_theta + wa2;
+        double a1_textbook = 2.0 * (wa2 - 1.0) / a0;
+        double a2_textbook = (1.0 + 2.0 * wa * cos_theta + wa2) / a0;
+        
+        double b0, b1, b2;
+        if (is_highpass) {
+            b0 = 1.0 / a0;
+            b1 = -2.0 / a0;
+            b2 = 1.0 / a0;
+        } else {
+            b0 = wa2 / a0;
+            b1 = 2.0 * wa2 / a0;
+            b2 = wa2 / a0;
+        }
+        
+        int idx = (k - 1) * 5;
+        // Ordine CMSIS DSP: b0, b1, b2, a1, a2 (dove a1 e a2 sono i negati della formula standard)
+        coeffs_out[idx + 0] = (float32_t)b0;
+        coeffs_out[idx + 1] = (float32_t)b1;
+        coeffs_out[idx + 2] = (float32_t)b2;
+        coeffs_out[idx + 3] = (float32_t)(-a1_textbook);
+        coeffs_out[idx + 4] = (float32_t)(-a2_textbook);
+    }
+}
 
 /* ========================================================================
  *  FILTRO RESPIRATORIO (passa-banda 0.1 - 0.4 Hz, sulla baseline DC dell'IR)
@@ -331,6 +363,10 @@ static void vitals_update_respiration(float resp_sample_filtered)
 
 void Vitals_Init(void)
 {
+    /* Calcolo dei coefficienti del filtro passa-banda 0.6 - 10 Hz (12esimo ordine) */
+    compute_butterworth_biquads(VITALS_BUTTERWORTH_ORDER, 10.0, VITALS_FS_HZ, false, &cardiac_filter_coeffs[0]);
+    compute_butterworth_biquads(VITALS_BUTTERWORTH_ORDER, 0.6, VITALS_FS_HZ, true, &cardiac_filter_coeffs[(VITALS_BUTTERWORTH_ORDER / 2) * 5]);
+
     arm_biquad_cascade_df1_init_f32(&red_filter_inst, VITALS_FILTER_STAGES,
                                      cardiac_filter_coeffs, red_filter_state);
     arm_biquad_cascade_df1_init_f32(&ir_filter_inst, VITALS_FILTER_STAGES,
@@ -392,6 +428,10 @@ void Vitals_ProcessSample(uint32_t raw_red, uint32_t raw_ir)
     float ac_ir_filtered  = 0.0f;
     arm_biquad_cascade_df1_f32(&red_filter_inst, &red_f, &ac_red_filtered, 1);
     arm_biquad_cascade_df1_f32(&ir_filter_inst,  &ir_f,  &ac_ir_filtered,  1);
+
+    /* Invert AC components since reflective PPG yields inverted morphology */
+    ac_red_filtered = -ac_red_filtered;
+    ac_ir_filtered  = -ac_ir_filtered;
 
     sample_counter++;
 
