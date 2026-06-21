@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main application file for MainBoard_IMU_Logger project.
+  * @brief          : Main application file for SWDP_Project_A4 project.
   ******************************************************************************
   * @functionality  : This firmware implements a complete Data Logger for the on board IMU.
   * @details        : The application operates using a State Machine triggered by a
