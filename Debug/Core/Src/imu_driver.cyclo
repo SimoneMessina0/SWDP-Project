@@ -1,9 +1,0 @@
-../Core/Src/imu_driver.c:36:9:IMU_Init	3
-../Core/Src/imu_driver.c:51:6:IMU_ConfigAccelerometer	2
-../Core/Src/imu_driver.c:83:6:IMU_ConfigGyroscope	2
-../Core/Src/imu_driver.c:113:6:IMU_ReadAccelerometerData	1
-../Core/Src/imu_driver.c:141:6:IMU_ReadGyroscopeData	1
-../Core/Src/imu_driver.c:174:16:imu_read_register	3
-../Core/Src/imu_driver.c:195:16:imu_write_register	2
-../Core/Src/imu_driver.c:212:14:get_accel_sensitivity	5
-../Core/Src/imu_driver.c:228:14:get_gyro_sensitivity	5

@@ -1,3 +1,0 @@
-../Core/Src/led_driver.c:23:6:LED_On	16	static
-../Core/Src/led_driver.c:47:6:LED_Off	16	static
-../Core/Src/led_driver.c:71:6:LED_Toggle	16	static

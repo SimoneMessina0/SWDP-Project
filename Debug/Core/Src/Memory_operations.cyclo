@@ -1,3 +1,0 @@
-../Core/Src/Memory_operations.c:27:6:find_bad_blocks	3
-../Core/Src/Memory_operations.c:54:6:erase_good_blocks	4
-../Core/Src/Memory_operations.c:73:6:write_packet	1

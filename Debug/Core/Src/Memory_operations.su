@@ -1,3 +1,0 @@
-../Core/Src/Memory_operations.c:27:6:find_bad_blocks	32	static
-../Core/Src/Memory_operations.c:54:6:erase_good_blocks	32	static
-../Core/Src/Memory_operations.c:73:6:write_packet	32	static

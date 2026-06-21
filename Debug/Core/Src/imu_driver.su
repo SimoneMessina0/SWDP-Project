@@ -1,9 +1,0 @@
-../Core/Src/imu_driver.c:36:9:IMU_Init	16	static
-../Core/Src/imu_driver.c:51:6:IMU_ConfigAccelerometer	24	static
-../Core/Src/imu_driver.c:83:6:IMU_ConfigGyroscope	24	static
-../Core/Src/imu_driver.c:113:6:IMU_ReadAccelerometerData	32	static
-../Core/Src/imu_driver.c:141:6:IMU_ReadGyroscopeData	32	static
-../Core/Src/imu_driver.c:174:16:imu_read_register	24	static
-../Core/Src/imu_driver.c:195:16:imu_write_register	32	static
-../Core/Src/imu_driver.c:212:14:get_accel_sensitivity	16	static
-../Core/Src/imu_driver.c:228:14:get_gyro_sensitivity	16	static
