@@ -218,8 +218,38 @@ void BLE_ReceiveData(uint8_t* data, uint8_t data_length) {
     HAL_UART_Receive(&huart3, data, data_length, UART_TIMEOUT);
 }
 
+#define BLE_TX_RING_BUFFER_SIZE 64
+
+typedef struct {
+    uint8_t buffer[BLE_TX_RING_BUFFER_SIZE][PACKET_LENGTH];
+    uint8_t length[BLE_TX_RING_BUFFER_SIZE];
+    volatile uint8_t head;
+    volatile uint8_t tail;
+    volatile uint8_t count;
+    volatile uint8_t is_transmitting;
+} BLE_TxRingBuffer;
+
+static BLE_TxRingBuffer tx_ring_buffer = { .head = 0, .tail = 0, .count = 0, .is_transmitting = 0 };
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART3) {
+        if (tx_ring_buffer.count > 0) {
+            tx_ring_buffer.tail = (tx_ring_buffer.tail + 1) % BLE_TX_RING_BUFFER_SIZE;
+            tx_ring_buffer.count--;
+            
+            if (tx_ring_buffer.count > 0) {
+                HAL_UART_Transmit_IT(&huart3, tx_ring_buffer.buffer[tx_ring_buffer.tail], tx_ring_buffer.length[tx_ring_buffer.tail]);
+            } else {
+                tx_ring_buffer.is_transmitting = 0;
+            }
+        } else {
+            tx_ring_buffer.is_transmitting = 0;
+        }
+    }
+}
+
 /**
- * @brief Sends a structured data packet with a specific type and value.
+ * @brief Sends a structured data packet asynchronously with a specific type and value.
  *
  * This function creates a standardized packet format to send specific sensor data.
  * The packet format is: { | Type | MSB of Value | ... | LSB of Value | ... | }
@@ -262,7 +292,23 @@ void BLE_SendPacket(BLE_DataType ble_data_type, uint8_t* data_buffer, uint8_t da
         ble_packet[i + 2] = data_buffer[i];
     }
 
-    BLE_SendData(ble_packet, sizeof(ble_packet));
+    // Asynchronous send using Ring Buffer
+    __disable_irq();
+    if (tx_ring_buffer.count < BLE_TX_RING_BUFFER_SIZE) {
+        for (uint8_t i = 0; i < sizeof(ble_packet); i++) {
+            tx_ring_buffer.buffer[tx_ring_buffer.head][i] = ble_packet[i];
+        }
+        tx_ring_buffer.length[tx_ring_buffer.head] = sizeof(ble_packet);
+        
+        tx_ring_buffer.head = (tx_ring_buffer.head + 1) % BLE_TX_RING_BUFFER_SIZE;
+        tx_ring_buffer.count++;
+        
+        if (!tx_ring_buffer.is_transmitting) {
+            tx_ring_buffer.is_transmitting = 1;
+            HAL_UART_Transmit_IT(&huart3, tx_ring_buffer.buffer[tx_ring_buffer.tail], tx_ring_buffer.length[tx_ring_buffer.tail]);
+        }
+    }
+    __enable_irq();
 }
 
 // --- Helper Function Implementations ---

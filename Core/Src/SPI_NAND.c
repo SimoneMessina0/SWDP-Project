@@ -721,7 +721,7 @@ int spi_write(uint8_t *write_buff, size_t write_len, uint32_t timeout_ms)
 
 void write_memory()
 {
-	if(sample == SAMPLES_PER_PAGE){ // Arrived at the end of the page
+	if(sample >= 4096){ // Arrived at the end of the page
 
 		sample = 0;
 
@@ -752,7 +752,7 @@ void write_memory()
 
 		pagina_scritta++;
 
-		memset(NAND_packet, 0, sizeof(NAND_packet));
+		memset(NAND_packet, 0xFF, sizeof(NAND_packet));
 	}
 
 }

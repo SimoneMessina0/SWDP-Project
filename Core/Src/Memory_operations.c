@@ -71,44 +71,27 @@ void erase_good_blocks(uint8_t *bad_blocks){
 	}
 }
 
-void write_packet(uint16_t sample, Time_Struct timestamp, uint8_t *gyroscope, uint8_t *accelerometer, uint8_t *health, uint8_t* temperature, uint8_t *NAND_packet){
+extern uint16_t sample;
+extern uint8_t NAND_packet[4096];
+void write_memory(void);
 
-	uint8_t pkt_sub_id;
+void write_packet(uint8_t data_type, Time_Struct timestamp, uint8_t *payload, uint8_t payload_size){
+	uint16_t packet_size = 1 + 5 + payload_size;
 	
-	NAND_packet[0 + (sample * BYTES_PER_SAMPLE)] = timestamp.hh;
-	NAND_packet[1 + (sample * BYTES_PER_SAMPLE)] = timestamp.mm;
-	NAND_packet[2 + (sample * BYTES_PER_SAMPLE)] = timestamp.ss;
-
-	uint16_t milli = timestamp.sss;
-	uint8_t m[2];
-	m[0] = milli & 0xff;
-	m[1] = milli >> 8;
-
-	NAND_packet[3 + (sample * BYTES_PER_SAMPLE)] = m[0];
-	NAND_packet[4 + (sample * BYTES_PER_SAMPLE)] = m[1];
-
-	pkt_sub_id = 5;
-
-	for (uint8_t i = 0; i < 6; i++){
-		NAND_packet[pkt_sub_id + i + (sample * BYTES_PER_SAMPLE)] = accelerometer[i];
+	if (sample + packet_size > 4096) {
+		for(uint16_t i = sample; i < 4096; i++) NAND_packet[i] = 0xFF;
+		sample = 4096;
+		write_memory();
 	}
-	pkt_sub_id+= 6;
-	for (uint8_t i = 0; i < 6; i++){
-		NAND_packet[pkt_sub_id + i + (sample * BYTES_PER_SAMPLE)] = gyroscope[i];
-	}
-	pkt_sub_id+= 6;
-	for (uint8_t i = 0; i < 3 * NUMBER_OF_ACTIVE_LEDS; i++){
-		NAND_packet[pkt_sub_id + i + (sample * BYTES_PER_SAMPLE)] = health[i];
-	}
-	pkt_sub_id+= 3 * NUMBER_OF_ACTIVE_LEDS;
-	for (uint8_t i = 0; i < 2; i++){
-		NAND_packet[pkt_sub_id + i + (sample * BYTES_PER_SAMPLE)] = temperature[i];
-	}
-
 	
-
+	NAND_packet[sample++] = data_type;
+	NAND_packet[sample++] = timestamp.hh;
+	NAND_packet[sample++] = timestamp.mm;
+	NAND_packet[sample++] = timestamp.ss;
+	NAND_packet[sample++] = timestamp.sss & 0xFF;
+	NAND_packet[sample++] = (timestamp.sss >> 8) & 0xFF;
+	
+	for (uint8_t i = 0; i < payload_size; i++) {
+		NAND_packet[sample++] = payload[i];
+	}
 }
-
-
-
-

@@ -75,7 +75,7 @@ void MAX30101_LED_Config(uint8_t led_pa[LED_PULSE_N_REG], uint8_t multi_led[MULT
  * @param raw_data Pointer to an array used to store raw HEALTH data
  * @param read_ptr Pointer to last read position of FIFO
  */
-void MAX30101_Read_Data(HEALTH_data acc_data[][32], uint8_t *raw_data, uint8_t *read_ptr){
+uint8_t MAX30101_Read_Data(HEALTH_data acc_data[][32], uint8_t *raw_data, uint8_t *read_ptr){
 
     uint8_t     write_ptr, read_ptr_loc, ovf_counter;
     uint8_t     available_samples = 0;
@@ -84,21 +84,17 @@ void MAX30101_Read_Data(HEALTH_data acc_data[][32], uint8_t *raw_data, uint8_t *
     sensor_read_register(FIFO_WRITE_PTR, &write_ptr, 1);
     sensor_read_register(FIFO_READ_PTR, &read_ptr_loc, 1);
     sensor_read_register(FIFO_OVF_COUNTER, &ovf_counter, 1);
-    if (write_ptr != local_ptr){
-        available_samples = 1;
-    }
-
-
-    // if (write_ptr >= local_ptr)
-    //     available_samples = write_ptr - local_ptr;
-    // else 
-    //     available_samples = 32 - local_ptr + write_ptr;
+    if (write_ptr >= local_ptr)
+        available_samples = write_ptr - local_ptr;
+    else 
+        available_samples = 32 - local_ptr + write_ptr;
+        
     for (uint8_t i = 0; i < available_samples; i++){
         sensor_read_register(FIFO_DATA_REG, raw_data, 3* NUMBER_OF_ACTIVE_LEDS);
         for (uint8_t j = 0; j < NUMBER_OF_ACTIVE_LEDS; j++){
             raw_data[0 + 3 * j] &= 0x3;
-            // lo shift di 3 è per quando usiamo il formato a 15 bit, altrimenti è 0
-            acc_data[j][local_ptr] = ((raw_data[0 + 3 * j] << 16 | raw_data[1 + 3 * j] << 8 | raw_data[2 + 3 * j]) & 0x3FFFF) >> 3;
+            // lo shift di 3 è per quando usiamo il formato a 15 bit, altrimenti è 0 (18 bit -> shift 0)
+            acc_data[j][local_ptr] = ((raw_data[0 + 3 * j] << 16 | raw_data[1 + 3 * j] << 8 | raw_data[2 + 3 * j]) & 0x3FFFF) >> 0;
         }   
 
         local_ptr++;
@@ -106,10 +102,8 @@ void MAX30101_Read_Data(HEALTH_data acc_data[][32], uint8_t *raw_data, uint8_t *
             local_ptr = 0;
     }
     *read_ptr = local_ptr;
-}
-
-
-// --- Private Function Implementations (Helper Functions) ---
+    return available_samples;
+}// --- Private Function Implementations (Helper Functions) ---
 
 /**
  * @brief Reads a specific number of bytes from the IMU's register via I2C.

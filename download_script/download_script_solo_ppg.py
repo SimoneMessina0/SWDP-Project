@@ -26,16 +26,16 @@ def conv_gyro(arr):
 def apply_filter(signal):
     """
     Applies the 2-stage Direct Form I Biquad Cascade filter to the input signal.
-    Stage 1: 2nd-order Butterworth LPF (fc = 5.0 Hz, fs = 100.0 Hz)
-    Stage 2: 2nd-order Butterworth HPF (fc = 0.5 Hz, fs = 100.0 Hz)
+    Stage 1: 2nd-order Butterworth LPF (fc = 5.0 Hz, fs = 200.0 Hz)
+    Stage 2: 2nd-order Butterworth HPF (fc = 0.5 Hz, fs = 200.0 Hz)
     """
-    # Stage 1 (LPF: 5 Hz) coefficients
-    b0_1, b1_1, b2_1 = 0.020083366, 0.040166732, 0.020083366
-    a1_1, a2_1 = 1.561018076, -0.641351538
+    # Stage 1 (LPF: 5 Hz) coefficients, fs = 200 Hz
+    b0_1, b1_1, b2_1 = 0.00554277, 0.01108554, 0.00554277
+    a1_1, a2_1 = 1.778631, -0.800802
     
-    # Stage 2 (HPF: 0.5 Hz) coefficients
-    b0_2, b1_2, b2_2 = 0.978030510, -1.956061020, 0.978030510
-    a1_2, a2_2 = 1.955578394, -0.956543626
+    # Stage 2 (HPF: 0.5 Hz) coefficients, fs = 200 Hz
+    b0_2, b1_2, b2_2 = 0.9889543, -1.9779086, 0.9889543
+    a1_2, a2_2 = 1.977786, -0.978031
     
     n = len(signal)
     output = np.zeros(n)

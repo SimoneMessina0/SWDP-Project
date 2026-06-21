@@ -21,7 +21,7 @@
  * Le funzioni *_GetLatest() restituiscono l'ultimo valore stabile calcolato
  * (NaN/valore di default se non ancora disponibile un risultato valido).
  *
- * scelte per un fs di acquisizione PPG di 800 Hz, coerente con TIM2.
+ * scelte per un fs di acquisizione PPG di 200 Hz, coerente con TIM2.
  */
 
 #ifndef VITALS_PROCESSING_H
@@ -42,7 +42,7 @@ extern "C" {
 
 /* --- HR / peak detection --- */
 #define VITALS_HR_MIN_BPM           35.0f
-#define VITALS_HR_MAX_BPM           220.0f
+#define VITALS_HR_MAX_BPM           300.0f /* 300 bpm => periodo refrattario 0.2s */
 /* Distanza minima tra due picchi accettata, derivata da HR_MAX_BPM */
 #define VITALS_MIN_PEAK_DISTANCE_S  (60.0f / VITALS_HR_MAX_BPM)
 
@@ -85,7 +85,7 @@ typedef struct {
 void Vitals_Init(void);
 
 /**
- * @brief Da chiamare ad ogni nuovo campione disponibile (800 Hz), con i
+ * @brief Da chiamare ad ogni nuovo campione disponibile (200 Hz), con i
  * valori RAW (non filtrati) letti dal FIFO del MAX30101.
  *
  * Esegue, in ordine:
@@ -99,7 +99,7 @@ void Vitals_Init(void);
  * @param raw_red  Campione raw RED (18 bit utili, gia' mascherato dal driver)
  * @param raw_ir   Campione raw IR  (18 bit utili, gia' mascherato dal driver)
  */
-void Vitals_ProcessSample(uint32_t raw_red, uint32_t raw_ir);
+void Vitals_ProcessSample(uint32_t raw_red, uint32_t raw_ir, float ac_red_filtered, float ac_ir_filtered);
 
 /**
  * @brief Restituisce l'ultimo valore di HR calcolato (media mobile sugli

@@ -1,8 +1,22 @@
+import os
+import sys
+import subprocess
+
+def ensure_venv():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    venv_python = os.path.join(script_dir, 'venv', 'Scripts', 'python.exe')
+    
+    if os.path.abspath(sys.executable) != os.path.abspath(venv_python) and os.path.exists(venv_python):
+        print("🔄 Relaunching using local venv...")
+        sys.exit(subprocess.call([venv_python] + sys.argv))
+
+ensure_venv()
+
 import numpy as np
 import matplotlib.pyplot as plt
 import serial
-import os
 import pandas as pd
+import struct
 from datetime import datetime
 from tkinter import Tk, filedialog, ttk, messagebox, StringVar, Label, Button
 from serial.tools import list_ports
@@ -23,51 +37,6 @@ def conv_gyro(arr):
     z = convert_16bit_signed(arr[:,4], arr[:,5]) / (2**15) * 250
     return x, y, z
 
-def apply_filter(signal):
-    """
-    Applies the 2-stage Direct Form I Biquad Cascade filter to the input signal.
-    Stage 1: 2nd-order Butterworth LPF (fc = 5.0 Hz, fs = 100.0 Hz)
-    Stage 2: 2nd-order Butterworth HPF (fc = 0.5 Hz, fs = 100.0 Hz)
-    """
-    # Stage 1 (LPF: 5 Hz) coefficients
-    b0_1, b1_1, b2_1 = 0.020083366, 0.040166732, 0.020083366
-    a1_1, a2_1 = 1.561018076, -0.641351538
-    
-    # Stage 2 (HPF: 0.5 Hz) coefficients
-    b0_2, b1_2, b2_2 = 0.978030510, -1.956061020, 0.978030510
-    a1_2, a2_2 = 1.955578394, -0.956543626
-    
-    n = len(signal)
-    output = np.zeros(n)
-    
-    # Stage 1 states (Direct Form I: x[n-1], x[n-2], y[n-1], y[n-2])
-    s1_x1, s1_x2 = 0.0, 0.0
-    s1_y1, s1_y2 = 0.0, 0.0
-    
-    # Stage 2 states
-    s2_x1, s2_x2 = 0.0, 0.0
-    s2_y1, s2_y2 = 0.0, 0.0
-    
-    for i in range(n):
-        # Stage 1
-        x = float(signal[i])
-        y1 = b0_1 * x + b1_1 * s1_x1 + b2_1 * s1_x2 + a1_1 * s1_y1 + a2_1 * s1_y2
-        s1_x2 = s1_x1
-        s1_x1 = x
-        s1_y2 = s1_y1
-        s1_y1 = y1
-        
-        # Stage 2
-        y2 = b0_2 * y1 + b1_2 * s2_x1 + b2_2 * s2_x2 + a1_2 * s2_y1 + a2_2 * s2_y2
-        s2_x2 = s2_x1
-        s2_x1 = y1
-        s2_y2 = s2_y1
-        s2_y1 = y2
-        
-        output[i] = y2
-        
-    return output
-
 def receive_and_save_data(ser, bin_filename, packet_size=4096, max_packets=2048*64):
     """Riceve pacchetti via seriale e li salva in binario."""
     with open(bin_filename, 'wb') as f:
@@ -83,157 +52,172 @@ def receive_and_save_data(ser, bin_filename, packet_size=4096, max_packets=2048*
     ser.close()
     print("📴 Serial COM Port Closed.")
 
-def process_bin_file(bin_filename, csv_filename=None):
-    hh_list, mm_list, ss_list, sss_list = [], [], [], []
-    acc_x_list, acc_y_list, acc_z_list = [], [], []
-    gyro_x_list, gyro_y_list, gyro_z_list = [], [], []
-    ppg0_list, ppg1_list = [], []
-    temp_list = []
+def process_bin_file(bin_filename, csv_filename_prefix=None):
+    # Dictionaries to store lists for each data type
+    imu_data = {'time': [], 'acc_x': [], 'acc_y': [], 'acc_z': [], 'gyro_x': [], 'gyro_y': [], 'gyro_z': []}
+    ppg_data = {'time': [], 'ppg_filtered_ir': []}
+    hr_data = {'time': [], 'hr_bpm': []}
+    slow_data = {'time': [], 'spo2': [], 'sdnn': [], 'rmssd': [], 'rr': [], 'temp': []}
 
-    # Each NAND page is sent as 4096 bytes. We ignore the last 16 spare bytes
-    # and parse subpackets. Each sample contains: 5 bytes timestamp, 6 bytes
-    # accelerometer, 6 bytes gyroscope, 6 bytes MAX30101 (3 bytes per LED)
-    SUBPKT_SIZE = 25
+    DATA_TYPE_PPG = 0
+    DATA_TYPE_HR = 1
+    DATA_TYPE_IMU_COMBINED = 2
+    DATA_TYPE_SLOW_VITALS = 3
+
     with open(bin_filename, "rb") as f:
         while True:
             pagina = f.read(4096)
             if len(pagina) < 4096:
                 break
-            # consider only the first 4080 bytes (4096 - 16 spare bytes)
-            valid_bytes = pagina[:4080]
-            # parse subpackets of SUBPKT_SIZE bytes
-            for i in range(0, len(valid_bytes), SUBPKT_SIZE):
-                subpkt = valid_bytes[i:i+SUBPKT_SIZE]
-                if len(subpkt) < SUBPKT_SIZE:
-                    continue
-                # timestamp
-                hh = subpkt[0]
-                mm = subpkt[1]
-                ss = subpkt[2]
-                sss = subpkt[3] | (subpkt[4] << 8)
-                hh_list.append(hh)
-                mm_list.append(mm)
-                ss_list.append(ss)
-                sss_list.append(sss)
-                # dati IMU
-                # accelerometer: bytes 5..10 (6 bytes)
-                acc_arr = np.frombuffer(subpkt[5:11], dtype=np.uint8).reshape(1,6)
-                acc_x, acc_y, acc_z = conv_imu(acc_arr)
-                # gyroscope: bytes 11..16 (6 bytes)
-                gyro_arr = np.frombuffer(subpkt[11:17], dtype=np.uint8).reshape(1,6)
-                gx, gy, gz = conv_gyro(gyro_arr)
-                acc_x_list.append(acc_x[0])
-                acc_y_list.append(acc_y[0])
-                acc_z_list.append(acc_z[0])
-                gyro_x_list.append(gx[0]) 
-                gyro_y_list.append(gy[0])
-                gyro_z_list.append(gz[0])
-                # PPG (MAX30101): two 24-bit big-endian values
-                ppg0 = int.from_bytes(subpkt[17:20], byteorder='big') >> 3  # shift di 3 per formato a 15 bit
-                ppg1 = int.from_bytes(subpkt[20:23], byteorder='big') >> 3  # shift di 3 per formato a 15 bit
-                temp = int.from_bytes(subpkt[23:25], byteorder='big')
-                ppg0_list.append(ppg0)
-                ppg1_list.append(ppg1)
-                temp_list.append(temp)
+            
+            idx = 0
+            while idx < 4096:
+                data_type = pagina[idx]
+                if data_type == 0xFF:
+                    break # End of valid data in this page
+                
+                idx += 1
+                if idx + 5 > 4096: break
+                
+                hh = pagina[idx]
+                mm = pagina[idx+1]
+                ss = pagina[idx+2]
+                sss = pagina[idx+3] | (pagina[idx+4] << 8)
+                idx += 5
+                
+                time_sec = hh * 3600 + mm * 60 + ss + sss / 1000.0
+                
+                if data_type == DATA_TYPE_PPG:
+                    if idx + 4 > 4096: break
+                    ppg_val = struct.unpack('<f', pagina[idx:idx+4])[0]
+                    idx += 4
+                    ppg_data['time'].append(time_sec)
+                    ppg_data['ppg_filtered_ir'].append(ppg_val)
+                    
+                elif data_type == DATA_TYPE_HR:
+                    if idx + 4 > 4096: break
+                    hr_val = struct.unpack('<f', pagina[idx:idx+4])[0]
+                    idx += 4
+                    hr_data['time'].append(time_sec)
+                    hr_data['hr_bpm'].append(hr_val)
+                    
+                elif data_type == DATA_TYPE_IMU_COMBINED:
+                    if idx + 12 > 4096: break
+                    acc_arr = np.frombuffer(pagina[idx:idx+6], dtype=np.uint8).reshape(1,6)
+                    acc_x, acc_y, acc_z = conv_imu(acc_arr)
+                    gyro_arr = np.frombuffer(pagina[idx+6:idx+12], dtype=np.uint8).reshape(1,6)
+                    gx, gy, gz = conv_gyro(gyro_arr)
+                    idx += 12
+                    
+                    imu_data['time'].append(time_sec)
+                    imu_data['acc_x'].append(acc_x[0])
+                    imu_data['acc_y'].append(acc_y[0])
+                    imu_data['acc_z'].append(acc_z[0])
+                    imu_data['gyro_x'].append(gx[0])
+                    imu_data['gyro_y'].append(gy[0])
+                    imu_data['gyro_z'].append(gz[0])
+                    
+                elif data_type == DATA_TYPE_SLOW_VITALS:
+                    if idx + 18 > 4096: break
+                    spo2 = struct.unpack('<f', pagina[idx:idx+4])[0]
+                    sdnn = struct.unpack('<f', pagina[idx+4:idx+8])[0]
+                    rmssd = struct.unpack('<f', pagina[idx+8:idx+12])[0]
+                    rr = struct.unpack('<f', pagina[idx+12:idx+16])[0]
+                    temp_raw = struct.unpack('<H', pagina[idx+16:idx+18])[0]
+                    idx += 18
+                    
+                    slow_data['time'].append(time_sec)
+                    slow_data['spo2'].append(spo2)
+                    slow_data['sdnn'].append(sdnn)
+                    slow_data['rmssd'].append(rmssd)
+                    slow_data['rr'].append(rr)
+                    slow_data['temp'].append(temp_raw * 0.00390625)
+                else:
+                    # Unknown data type, cannot continue parsing this page
+                    break
 
-    # apply bandpass filter
-    ppg0_filtered = apply_filter(ppg0_list)
-    ppg1_filtered = apply_filter(ppg1_list)
+    df_imu = pd.DataFrame(imu_data)
+    df_ppg = pd.DataFrame(ppg_data)
+    df_hr = pd.DataFrame(hr_data)
+    df_slow = pd.DataFrame(slow_data)
 
-    # crea DataFrame
-    df = pd.DataFrame({
-        "hh": hh_list,
-        "mm": mm_list,
-        "ss": ss_list,
-        "sss": sss_list,
-        "acc_x": acc_x_list,
-        "acc_y": acc_y_list,
-        "acc_z": acc_z_list,
-        "gyro_x": gyro_x_list,
-        "gyro_y": gyro_y_list,
-        "gyro_z": gyro_z_list,
-        "ppg_led0": ppg0_list,
-        "ppg_led0_filtered": ppg0_filtered,
-        "ppg_led1": ppg1_list,
-        "ppg_led1_filtered": ppg1_filtered,
-        "skin_temperature": [temp * 0.00390625 for temp in temp_list]
-    })
+    # plot IMU
+    if not df_imu.empty:
+        plt.figure(figsize=(15,6))
+        plt.subplot(2,1,1)
+        plt.plot(df_imu['time'], df_imu['acc_x'], label="acc_x")
+        plt.plot(df_imu['time'], df_imu['acc_y'], label="acc_y")
+        plt.plot(df_imu['time'], df_imu['acc_z'], label="acc_z")
+        plt.title("Accelerometer")
+        plt.ylabel("g")
+        plt.legend()
+        plt.grid(True)
 
-    # plot accelerometro
-    plt.figure(figsize=(15,5))
-    plt.subplot(2,1,1)
-    plt.plot(df.index, df["acc_x"], label="acc_x")
-    plt.plot(df.index, df["acc_y"], label="acc_y")
-    plt.plot(df.index, df["acc_z"], label="acc_z")
-    plt.title("Accelerometer")
-    plt.xlabel("Subpacket index")
-    plt.ylabel("g")
-    plt.legend()
-    plt.grid(True)
+        plt.subplot(2,1,2)
+        plt.plot(df_imu['time'], df_imu['gyro_x'], label="gyro_x")
+        plt.plot(df_imu['time'], df_imu['gyro_y'], label="gyro_y")
+        plt.plot(df_imu['time'], df_imu['gyro_z'], label="gyro_z")
+        plt.title("Gyroscope")
+        plt.xlabel("Time (s)")
+        plt.ylabel("deg/s")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
 
-    # plot giroscopio
-    plt.subplot(2,1,2)
-    plt.plot(df.index, df["gyro_x"], label="gyro_x")
-    plt.plot(df.index, df["gyro_y"], label="gyro_y")
-    plt.plot(df.index, df["gyro_z"], label="gyro_z")
-    plt.title("Gyroscope")
-    plt.xlabel("Subpacket index")
-    plt.ylabel("deg/s")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
+    # plot PPG
+    if not df_ppg.empty:
+        plt.figure(figsize=(15,4))
+        plt.plot(df_ppg['time'], df_ppg['ppg_filtered_ir'], label="ppg_filtered_ir", color="tab:orange")
+        plt.title("PPG Filtered IR Signal")
+        plt.xlabel("Time (s)")
+        plt.ylabel("Amplitude")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
 
-    # plot PPG (MAX30101) - Raw vs Filtered
-    fig, axs = plt.subplots(nrows=2, ncols=2, figsize=(15,8))
+    # plot Vitals
+    if not df_hr.empty or not df_slow.empty:
+        fig, axs = plt.subplots(nrows=4, ncols=1, figsize=(15,10), sharex=True)
+        
+        if not df_hr.empty:
+            axs[0].plot(df_hr['time'], df_hr['hr_bpm'], 'ro-', label="HR (bpm)")
+            axs[0].set_title("Heart Rate")
+            axs[0].set_ylabel("bpm")
+            axs[0].legend()
+            axs[0].grid(True)
+            
+        if not df_slow.empty:
+            axs[1].plot(df_slow['time'], df_slow['spo2'], 'bo-', label="SpO2 (%)")
+            axs[1].set_title("SpO2")
+            axs[1].set_ylabel("%")
+            axs[1].legend()
+            axs[1].grid(True)
+            
+            axs[2].plot(df_slow['time'], df_slow['rr'], 'go-', label="RR (brpm)")
+            axs[2].set_title("Respiration Rate")
+            axs[2].set_ylabel("brpm")
+            axs[2].legend()
+            axs[2].grid(True)
+            
+            axs[3].plot(df_slow['time'], df_slow['temp'], 'mo-', label="Temperature (°C)")
+            axs[3].set_title("Skin Temperature")
+            axs[3].set_ylabel("°C")
+            axs[3].legend()
+            axs[3].grid(True)
+            
+        plt.xlabel("Time (s)")
+        plt.tight_layout()
+        plt.show()
 
-    # Raw signals
-    axs[0, 0].plot(df.index, df["ppg_led0"], label="ppg_led0 (raw)", color="tab:blue")
-    axs[0, 0].set_title("MAX30101 PPG LED0 - Raw")
-    axs[0, 0].set_ylabel("Raw value")
-    axs[0, 0].legend()
-    axs[0, 0].grid(True)
-
-    axs[0, 1].plot(df.index, df["ppg_led1"], label="ppg_led1 (raw)", color="tab:orange")
-    axs[0, 1].set_title("MAX30101 PPG LED1 - Raw")
-    axs[0, 1].set_ylabel("Raw value")
-    axs[0, 1].legend()
-    axs[0, 1].grid(True)
-
-    # Filtered signals
-    axs[1, 0].plot(df.index, df["ppg_led0_filtered"], label="ppg_led0 (filtered)", color="tab:blue")
-    axs[1, 0].set_title("MAX30101 PPG LED0 - Filtered")
-    axs[1, 0].set_xlabel("Subpacket index")
-    axs[1, 0].set_ylabel("Filtered value")
-    axs[1, 0].legend()
-    axs[1, 0].grid(True)
-
-    axs[1, 1].plot(df.index, df["ppg_led1_filtered"], label="ppg_led1 (filtered)", color="tab:orange")
-    axs[1, 1].set_title("MAX30101 PPG LED1 - Filtered")
-    axs[1, 1].set_xlabel("Subpacket index")
-    axs[1, 1].set_ylabel("Filtered value")
-    axs[1, 1].legend()
-    axs[1, 1].grid(True)
-
-    fig.suptitle("MAX30101 PPG Data Analysis (Raw vs Filtered)")
-    plt.tight_layout()
-    plt.show()
-
-    # plot skin temperature (MAX30205)
-    plt.figure(figsize=(15,5))
-    plt.plot(df.index, df["skin_temperature"], label="skin_temperature", color="tab:red")
-    plt.title("Skin Temperature")
-    plt.xlabel("Subpacket index")
-    plt.ylabel("°C")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-
-    # salva CSV
-    if csv_filename:
-        df.to_csv(csv_filename, index=False)
-        print(f"📄 Data saved in CSV: {csv_filename}")
+    # salva CSVs
+    if csv_filename_prefix:
+        if not df_imu.empty: df_imu.to_csv(csv_filename_prefix.replace(".csv", "_imu.csv"), index=False)
+        if not df_ppg.empty: df_ppg.to_csv(csv_filename_prefix.replace(".csv", "_ppg.csv"), index=False)
+        if not df_hr.empty: df_hr.to_csv(csv_filename_prefix.replace(".csv", "_hr.csv"), index=False)
+        if not df_slow.empty: df_slow.to_csv(csv_filename_prefix.replace(".csv", "_slow_vitals.csv"), index=False)
+        print(f"📄 Data saved as CSVs with prefix: {csv_filename_prefix}")
 
 def gui_select_com_and_folder():
     """Apre una piccola GUI per selezionare COM e cartella."""
@@ -288,10 +272,16 @@ def main():
     bin_filename = os.path.join(save_path, f"{base_filename}.bin")
     csv_filename = os.path.join(save_path, f"{base_filename}_imu.csv")
 
-    BAUD_RATE = 250000
+    BAUD_RATE = 115200
 
     try:
-        ser = serial.Serial(com_port, BAUD_RATE, timeout=10)
+        ser = serial.Serial()
+        ser.port = com_port
+        ser.baudrate = BAUD_RATE
+        ser.timeout = 10
+        ser.dtr = False
+        ser.rts = False
+        ser.open()
         print(f"🔌 Connected to {com_port}")
         receive_and_save_data(ser, bin_filename)
     except serial.SerialException as e:

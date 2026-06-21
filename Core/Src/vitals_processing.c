@@ -22,60 +22,7 @@
 #include "arm_math.h"
 #include <math.h>
 #include <string.h>
-
-/* ========================================================================
- *  FILTRI BIQUAD PER CANALE (passa-banda cardiaco 0.6 - 10 Hz)
- *  Generazione dinamica per 12esimo ordine (6 biquad LPF + 6 biquad HPF)
- * ======================================================================== */
-
-#define VITALS_BUTTERWORTH_ORDER 12
-#define VITALS_FILTER_STAGES (VITALS_BUTTERWORTH_ORDER) // 6 stadi LPF + 6 stadi HPF = 12 stadi totali
-
-static float32_t red_filter_state[4 * VITALS_FILTER_STAGES];
-static float32_t ir_filter_state[4 * VITALS_FILTER_STAGES];
-static arm_biquad_casd_df1_inst_f32 red_filter_inst;
-static arm_biquad_casd_df1_inst_f32 ir_filter_inst;
-
-static float32_t cardiac_filter_coeffs[5 * VITALS_FILTER_STAGES];
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
-/* Calcola i coefficienti di un filtro Butterworth e li salva nel formato CMSIS-DSP biquad */
-static void compute_butterworth_biquads(int order, double fc, double fs, bool is_highpass, float32_t* coeffs_out) {
-    int num_biquads = order / 2;
-    double wa = tan(M_PI * fc / fs);
-    double wa2 = wa * wa;
-
-    for (int k = 1; k <= num_biquads; k++) {
-        double theta = M_PI * (2.0 * k - 1.0 + order) / (2.0 * order);
-        double cos_theta = cos(theta);
-        
-        double a0 = 1.0 - 2.0 * wa * cos_theta + wa2;
-        double a1_textbook = 2.0 * (wa2 - 1.0) / a0;
-        double a2_textbook = (1.0 + 2.0 * wa * cos_theta + wa2) / a0;
-        
-        double b0, b1, b2;
-        if (is_highpass) {
-            b0 = 1.0 / a0;
-            b1 = -2.0 / a0;
-            b2 = 1.0 / a0;
-        } else {
-            b0 = wa2 / a0;
-            b1 = 2.0 * wa2 / a0;
-            b2 = wa2 / a0;
-        }
-        
-        int idx = (k - 1) * 5;
-        // Ordine CMSIS DSP: b0, b1, b2, a1, a2 (dove a1 e a2 sono i negati della formula standard)
-        coeffs_out[idx + 0] = (float32_t)b0;
-        coeffs_out[idx + 1] = (float32_t)b1;
-        coeffs_out[idx + 2] = (float32_t)b2;
-        coeffs_out[idx + 3] = (float32_t)(-a1_textbook);
-        coeffs_out[idx + 4] = (float32_t)(-a2_textbook);
-    }
-}
+#include "ppg_filter.h"
 
 /* ========================================================================
  *  FILTRO RESPIRATORIO (passa-banda 0.1 - 0.4 Hz, sulla baseline DC dell'IR)
@@ -84,24 +31,22 @@ static void compute_butterworth_biquads(int order, double fc, double fs, bool is
  *  a riposo / leggero sforzo.
  * ======================================================================== */
 
-static float32_t resp_filter_state[4 * VITALS_FILTER_STAGES];
+#define VITALS_RESP_FILTER_STAGES 2
+
+
+static float32_t resp_filter_state[4 * VITALS_RESP_FILTER_STAGES];
 static arm_biquad_casd_df1_inst_f32 resp_filter_inst;
 
-/* Coefficienti Butterworth 2 stage, fc1=0.4Hz (LPF) + fc2=0.1Hz (HPF), fs=800Hz. */
-static float32_t resp_filter_coeffs[5 * VITALS_FILTER_STAGES] = {
-    /* Stage 1: LPF Butterworth, fc = 0.4 Hz, fs = 800 Hz */
-    0.00000246f, 0.00000492f, 0.00000246f, 1.9955571f, -0.9955669f,
-    /* Stage 2: HPF Butterworth, fc = 0.1 Hz, fs = 800 Hz */
-    0.9994448f, -1.998889f, 0.9994448f, 1.998890f, -0.998890f
-};
+/* Coefficienti Butterworth 2 stage, fc1=0.4Hz (LPF) + fc2=0.1Hz (HPF), verranno calcolati dinamicamente per fs=800Hz. */
+static float32_t resp_filter_coeffs[5 * VITALS_RESP_FILTER_STAGES];
 
 /* ========================================================================
  *  STATO INTERNO: DC TRACKER (media mobile esponenziale)
  * ======================================================================== */
 
-/* Costante di tempo della EMA per la baseline DC: tau ~ 1.6s
+/* Costante di tempo della EMA per la baseline DC: tau ~ 1.25s
  * alpha = 1 - exp(-1/(fs*tau)) circa; scalato per 800Hz */
-#define VITALS_DC_ALPHA   0.0025f
+#define VITALS_DC_ALPHA   0.001f
 
 static float dc_red = 0.0f;
 static float dc_ir  = 0.0f;
@@ -111,11 +56,11 @@ static bool  dc_initialized = false;
  *  STATO INTERNO: PEAK DETECTION (per HR / HRV) sul segnale IR filtrato
  * ======================================================================== */
 
-/* Soglia adattiva: frazione dell'ampiezza picco-picco recente del segnale AC */
-#define VITALS_PEAK_THRESHOLD_RATIO   0.35f
-#define VITALS_PEAK_ENV_ALPHA         0.00625f   /* EMA per inviluppo ampiezza AC (scalato per 800Hz) */
+/* Soglia adattiva per i massimi locali (70% del max recente) */
+#define VITALS_PEAK_THRESHOLD_RATIO   0.7f
+#define VITALS_MAX_DECAY_RATE         (1.0f / (3.0f * VITALS_FS_HZ)) /* decadimento in ~3 sec */
 
-static float   ac_ir_envelope = 0.0f;     /* inviluppo (ampiezza) stimato del segnale AC IR */
+static float   ac_ir_recent_max = 0.0f;     /* massimo recente del segnale AC IR */
 static float   prev_sample_1 = 0.0f;      /* campione precedente (per derivata/discesa) */
 static float   prev_sample_2 = 0.0f;      /* campione precedente al precedente */
 static bool     rising_edge_seen = false;
@@ -208,21 +153,22 @@ static void vitals_push_nn_interval(float interval_ms)
  */
 static void vitals_detect_peak(float ac_ir_filtered)
 {
-    /* Aggiorna inviluppo di ampiezza (EMA sul valore assoluto) */
-    float abs_val = fabsf(ac_ir_filtered);
-    ac_ir_envelope = (1.0f - VITALS_PEAK_ENV_ALPHA) * ac_ir_envelope
-                     + VITALS_PEAK_ENV_ALPHA * abs_val;
+    /* Aggiorna il massimo locale decadente per calcolare la soglia al 70% */
+    ac_ir_recent_max -= ac_ir_recent_max * VITALS_MAX_DECAY_RATE;
+    if (ac_ir_filtered > ac_ir_recent_max) {
+        ac_ir_recent_max = ac_ir_filtered;
+    }
 
-    float threshold = VITALS_PEAK_THRESHOLD_RATIO * ac_ir_envelope;
+    float threshold = VITALS_PEAK_THRESHOLD_RATIO * ac_ir_recent_max;
 
-    /* Rilevazione picco locale: il campione precedente (prev_sample_1) e'
-     * un massimo locale se e' maggiore sia del campione ancora prima sia
-     * di quello corrente, ed e' sopra soglia. */
-    bool is_local_max = (prev_sample_1 > prev_sample_2) &&
-                         (prev_sample_1 >= ac_ir_filtered) &&
-                         (prev_sample_1 > threshold);
+    /* Rilevazione battito tramite massimo locale validato dalla soglia:
+     * il campione precedente e' maggiore sia del precedente ancora sia
+     * di quello attuale, ed e' superiore alla soglia. */
+    bool is_beat = (prev_sample_1 > prev_sample_2) && 
+                   (prev_sample_1 > ac_ir_filtered) && 
+                   (prev_sample_1 >= threshold);
 
-    if (is_local_max) {
+    if (is_beat) {
         uint32_t min_distance_samples =
             (uint32_t)(VITALS_MIN_PEAK_DISTANCE_S * VITALS_FS_HZ);
 
@@ -326,27 +272,46 @@ static void vitals_update_respiration(float resp_sample_filtered)
         return;
     }
 
-    /* Conta gli zero-crossing positivi (da <=0 a >0) sull'intero buffer
-     * disponibile, in ordine cronologico. Il buffer e' circolare: l'ordine
-     * cronologico parte da resp_write_idx (il piu' vecchio, che sara'
-     * sovrascritto al prossimo giro) se il buffer e' pieno, altrimenti da 0. */
+    /* Rileva i picchi massimi locali sull'intero buffer disponibile,
+     * in ordine cronologico. Il buffer e' circolare: l'ordine
+     * cronologico parte da resp_write_idx se il buffer e' pieno, altrimenti da 0. */
     uint16_t start_idx = (resp_count < VITALS_RESP_BUFFER_LEN) ? 0 : resp_write_idx;
     uint16_t n = resp_count;
 
-    uint16_t crossings = 0;
-    float prev_val = resp_buffer[start_idx];
-    for (uint16_t i = 1; i < n; i++) {
+    /* Trova il massimo globale nel buffer per calcolare la soglia di ampiezza */
+    float max_val = 0.0f;
+    for (uint16_t i = 0; i < n; i++) {
         uint16_t idx = (uint16_t)((start_idx + i) % VITALS_RESP_BUFFER_LEN);
-        float val = resp_buffer[idx];
-        if (prev_val <= 0.0f && val > 0.0f) {
-            crossings++;
+        if (resp_buffer[idx] > max_val) {
+            max_val = resp_buffer[idx];
         }
-        prev_val = val;
+    }
+
+    float threshold = 0.85f * max_val;
+    uint16_t peaks = 0;
+    int32_t last_peak_idx = -1;
+    uint32_t min_distance_samples = (uint32_t)(0.2f * VITALS_RESP_FS_HZ);
+
+    for (uint16_t i = 1; i < n - 1; i++) {
+        uint16_t idx_prev = (uint16_t)((start_idx + i - 1) % VITALS_RESP_BUFFER_LEN);
+        uint16_t idx_curr = (uint16_t)((start_idx + i) % VITALS_RESP_BUFFER_LEN);
+        uint16_t idx_next = (uint16_t)((start_idx + i + 1) % VITALS_RESP_BUFFER_LEN);
+
+        float val_prev = resp_buffer[idx_prev];
+        float val_curr = resp_buffer[idx_curr];
+        float val_next = resp_buffer[idx_next];
+
+        if (val_curr > val_prev && val_curr > val_next && val_curr >= threshold) {
+            if (last_peak_idx == -1 || (i - last_peak_idx) >= min_distance_samples) {
+                peaks++;
+                last_peak_idx = i;
+            }
+        }
     }
 
     float duration_s = (float)(n - 1) / VITALS_RESP_FS_HZ;
-    if (duration_s > 0.0f && crossings > 0) {
-        float breaths_per_second = (float)crossings / duration_s;
+    if (duration_s > 0.0f && peaks > 0) {
+        float breaths_per_second = (float)peaks / duration_s;
         float brpm = breaths_per_second * 60.0f;
 
         /* Range fisiologico plausibile: 4-40 respiri/min */
@@ -363,22 +328,17 @@ static void vitals_update_respiration(float resp_sample_filtered)
 
 void Vitals_Init(void)
 {
-    /* Calcolo dei coefficienti del filtro passa-banda 0.6 - 10 Hz (12esimo ordine) */
-    compute_butterworth_biquads(VITALS_BUTTERWORTH_ORDER, 10.0, VITALS_FS_HZ, false, &cardiac_filter_coeffs[0]);
-    compute_butterworth_biquads(VITALS_BUTTERWORTH_ORDER, 0.6, VITALS_FS_HZ, true, &cardiac_filter_coeffs[(VITALS_BUTTERWORTH_ORDER / 2) * 5]);
+    compute_butterworth_biquads(2, 0.4, 800.0, false, &resp_filter_coeffs[0]);
+    compute_butterworth_biquads(2, 0.1, 800.0, true,  &resp_filter_coeffs[5]);
 
-    arm_biquad_cascade_df1_init_f32(&red_filter_inst, VITALS_FILTER_STAGES,
-                                     cardiac_filter_coeffs, red_filter_state);
-    arm_biquad_cascade_df1_init_f32(&ir_filter_inst, VITALS_FILTER_STAGES,
-                                     cardiac_filter_coeffs, ir_filter_state);
-    arm_biquad_cascade_df1_init_f32(&resp_filter_inst, VITALS_FILTER_STAGES,
+    arm_biquad_cascade_df1_init_f32(&resp_filter_inst, VITALS_RESP_FILTER_STAGES,
                                      resp_filter_coeffs, resp_filter_state);
 
     dc_red = 0.0f;
     dc_ir = 0.0f;
     dc_initialized = false;
 
-    ac_ir_envelope = 0.0f;
+    ac_ir_recent_max = 0.0f;
     prev_sample_1 = 0.0f;
     prev_sample_2 = 0.0f;
     rising_edge_seen = false;
@@ -408,7 +368,7 @@ void Vitals_Init(void)
 
 }
 
-void Vitals_ProcessSample(uint32_t raw_red, uint32_t raw_ir)
+void Vitals_ProcessSample(uint32_t raw_red, uint32_t raw_ir, float ac_red_filtered, float ac_ir_filtered)
 {
     float red_f = (float)raw_red;
     float ir_f  = (float)raw_ir;
@@ -422,12 +382,6 @@ void Vitals_ProcessSample(uint32_t raw_red, uint32_t raw_ir)
         dc_red = (1.0f - VITALS_DC_ALPHA) * dc_red + VITALS_DC_ALPHA * red_f;
         dc_ir  = (1.0f - VITALS_DC_ALPHA) * dc_ir  + VITALS_DC_ALPHA * ir_f;
     }
-
-    /* --- Filtraggio passa-banda cardiaco (componente AC), RED e IR --- */
-    float ac_red_filtered = 0.0f;
-    float ac_ir_filtered  = 0.0f;
-    arm_biquad_cascade_df1_f32(&red_filter_inst, &red_f, &ac_red_filtered, 1);
-    arm_biquad_cascade_df1_f32(&ir_filter_inst,  &ir_f,  &ac_ir_filtered,  1);
 
     /* Invert AC components since reflective PPG yields inverted morphology */
     ac_red_filtered = -ac_red_filtered;
