@@ -1,21 +1,11 @@
 /**
  * \file vitals_processing.c
- * \brief Implementazione degli algoritmi PPG: HR, SpO2, HRV, RR, VO2Max.
+ * \brief Implementation of PPG algorithms: HR, SpO2, HRV, RR, VO2Max.
  *
- * Note implementative generali:
- *  - Niente malloc, niente librerie FFT: tutto a finestra scorrevole /
- *    medie mobili / filtri IIR di 1 o 2 ordine, compatibile con un
- *    Cortex-M33 senza FPU pesante (anche se qui e' presente FPU single
- *    precision, quindi i float sono comunque efficienti).
- *  - Il segnale "AC cardiaco" e' ottenuto con un filtro passa-banda IIR
- *    biquad (stessa libreria CMSIS-DSP gia' usata in ppg_filter.c), ma
- *    con un'istanza indipendente per IR e per RED, perche' qui serve
- *    anche il segnale RED filtrato per il calcolo di SpO2 (R ratio),
- *    cosa che ppg_filter.c (pensato solo per il canale IR da mandare in
- *    BLE) non fa.
- *  - Il segnale "DC" (linea di base) e' una semplice media mobile (EMA)
- *    a costante di tempo lenta (~ qualche secondo), che funge anche da
- *    riferimento per la modulazione respiratoria sulla baseline.
+ * General Implementation Notes:
+ *  - Implementation based on sliding window and IIR filters.
+ *  - AC signal obtained with separate biquad IIR band-pass filter for IR and RED.
+ *  - DC signal (baseline) calculated using Exponential Moving Average (EMA).
  */
 
 #include "vitals_processing.h"
@@ -25,10 +15,10 @@
 #include "ppg_filter.h"
 
 /* ========================================================================
- *  FILTRO RESPIRATORIO (passa-banda 0.1 - 0.4 Hz, sulla baseline DC dell'IR)
- *  2 stage biquad Butterworth, fs effettiva = VITALS_FS_HZ (100 Hz). La
- *  banda 0.1-0.4 Hz corrisponde a 6-24 respiri/minuto, range fisiologico
- *  a riposo / leggero sforzo.
+ *  RESPIRATORY FILTER (band-pass 0.1 - 0.4 Hz, on the IR DC baseline)
+ *  2 stage biquad Butterworth, effective fs = VITALS_FS_HZ (100 Hz). The
+ *  0.1-0.4 Hz band corresponds to 6-24 breaths/minute, physiological range
+ *  at rest / light effort.
  * ======================================================================== */
 
 #define VITALS_RESP_FILTER_STAGES 2
@@ -37,15 +27,15 @@
 static float32_t resp_filter_state[4 * VITALS_RESP_FILTER_STAGES];
 static arm_biquad_casd_df1_inst_f32 resp_filter_inst;
 
-/* Coefficienti Butterworth 2 stage, fc1=0.4Hz (LPF) + fc2=0.1Hz (HPF), verranno calcolati dinamicamente per fs=800Hz. */
+/* Butterworth 2 stage coefficients, fc1=0.4Hz (LPF) + fc2=0.1Hz (HPF), will be calculated dynamically for fs=800Hz. */
 static float32_t resp_filter_coeffs[5 * VITALS_RESP_FILTER_STAGES];
 
 /* ========================================================================
- *  STATO INTERNO: DC TRACKER (media mobile esponenziale)
+ *  INTERNAL STATE: DC TRACKER (exponential moving average)
  * ======================================================================== */
 
-/* Costante di tempo della EMA per la baseline DC: tau ~ 1.25s
- * alpha = 1 - exp(-1/(fs*tau)) circa; scalato per 800Hz */
+/* EMA time constant for DC baseline: tau ~ 1.25s
+ * alpha = 1 - exp(-1/(fs*tau)) approx; scaled for 800Hz */
 #define VITALS_DC_ALPHA   0.001f
 
 static float dc_red = 0.0f;
@@ -53,36 +43,36 @@ static float dc_ir  = 0.0f;
 static bool  dc_initialized = false;
 
 /* ========================================================================
- *  STATO INTERNO: PEAK DETECTION (per HR / HRV) sul segnale IR filtrato
+ *  INTERNAL STATE: PEAK DETECTION (for HR / HRV) on filtered IR signal
  * ======================================================================== */
 
-/* Soglia adattiva per i massimi locali (70% del max recente) */
+/* Adaptive threshold for local maxima (70% of recent max) */
 #define VITALS_PEAK_THRESHOLD_RATIO   0.7f
-#define VITALS_MAX_DECAY_RATE         (1.0f / (3.0f * VITALS_FS_HZ)) /* decadimento in ~3 sec */
+#define VITALS_MAX_DECAY_RATE         (1.0f / (3.0f * VITALS_FS_HZ)) /* decay in ~3 sec */
 
-static float   ac_ir_recent_max = 0.0f;     /* massimo recente del segnale AC IR */
-static float   prev_sample_1 = 0.0f;      /* campione precedente (per derivata/discesa) */
-static float   prev_sample_2 = 0.0f;      /* campione precedente al precedente */
+static float   ac_ir_recent_max = 0.0f;     /* recent maximum of IR AC signal */
+static float   prev_sample_1 = 0.0f;      /* previous sample (for derivative/descent) */
+static float   prev_sample_2 = 0.0f;      /* sample before previous */
 static bool     rising_edge_seen = false;
-static uint32_t sample_counter = 0;       /* contatore campioni totali, per i timestamp dei picchi */
+static uint32_t sample_counter = 0;       /* total sample counter, for peak timestamps */
 static uint32_t last_peak_sample_idx = 0;
 static bool      last_peak_valid = false;
 
-/* Buffer circolare degli ultimi intervalli NN (picco-picco), in millisecondi */
+/* Circular buffer of the latest NN intervals (peak-to-peak), in milliseconds */
 static float    nn_intervals_ms[VITALS_HRV_NN_BUFFER_LEN];
-static uint16_t nn_count = 0;          /* numero di intervalli validi nel buffer (satura a VITALS_HRV_NN_BUFFER_LEN) */
-static uint16_t nn_write_idx = 0;      /* indice di scrittura circolare */
+static uint16_t nn_count = 0;          /* number of valid intervals in buffer (saturates at VITALS_HRV_NN_BUFFER_LEN) */
+static uint16_t nn_write_idx = 0;      /* circular write index */
 
-/* Stima HR corrente, calcolata come media mobile sugli ultimi intervalli NN */
+/* Current HR estimation, calculated as moving average over the latest NN intervals */
 static float current_hr_bpm = -1.0f;
 static bool  current_hr_valid = false;
 
 /* ========================================================================
- *  STATO INTERNO: SpO2
+ *  INTERNAL STATE: SpO2
  * ======================================================================== */
 
-/* Per stimare AC (ampiezza picco-picco) su una finestra, teniamo min/max
- * del segnale filtrato cardiaco per RED e IR sulla finestra corrente. */
+/* To estimate AC (peak-to-peak amplitude) over a window, we keep min/max
+ * of the filtered cardiac signal for RED and IR on the current window. */
 static float red_ac_min, red_ac_max;
 static float ir_ac_min,  ir_ac_max;
 static uint32_t spo2_window_counter = 0;
@@ -91,15 +81,15 @@ static float current_spo2 = -1.0f;
 static bool  current_spo2_valid = false;
 
 /* ========================================================================
- *  STATO INTERNO: RESPIRAZIONE (RR)
+ *  INTERNAL STATE: RESPIRATION (RR)
  * ======================================================================== */
 
-/* Buffer del segnale di respirazione filtrato (decimato per ridurre il
- * costo di memoria: 1 campione ogni 10 -> 10 Hz effettivi, banda 0.1-0.4Hz
- * e' ben sotto Nyquist anche a 10Hz). */
+/* Filtered respiration signal buffer (decimated to reduce memory
+ * cost: 1 sample every 10 -> 10 Hz effective, 0.1-0.4Hz band
+ * is well below Nyquist even at 10Hz). */
 static float    resp_buffer[VITALS_RESP_BUFFER_LEN];
 static uint16_t resp_write_idx = 0;
-static uint16_t resp_count = 0;         /* quanti campioni validi sono presenti nel buffer (satura) */
+static uint16_t resp_count = 0;         /* how many valid samples are in buffer (saturates) */
 static uint8_t  resp_decim_counter = 0;
 #define VITALS_RESP_DECIMATION  80U      /* 800Hz / 80 = 10 Hz */
 #define VITALS_RESP_FS_HZ       (VITALS_FS_HZ / (float)VITALS_RESP_DECIMATION)
@@ -110,17 +100,17 @@ static bool  current_rr_valid = false;
 
 
 /* ========================================================================
- *  FUNZIONI PRIVATE
+ *  PRIVATE FUNCTIONS
  * ======================================================================== */
 
 /**
- * @brief Aggiorna il buffer circolare degli intervalli NN con un nuovo
- * intervallo picco-picco (in ms) e ricalcola la stima HR corrente come
- * media degli ultimi intervalli disponibili.
+ * @brief Updates the circular buffer of NN intervals with a new
+ * peak-to-peak interval (in ms) and recalculates the current HR estimate as
+ * average of the latest available intervals.
  */
 static void vitals_push_nn_interval(float interval_ms)
 {
-    /* Scarta intervalli fisiologicamente impossibili (rumore / falsi picchi) */
+    /* Discard physiologically impossible intervals (noise / false peaks) */
     float bpm_instant = 60000.0f / interval_ms;
     if (bpm_instant < VITALS_HR_MIN_BPM || bpm_instant > VITALS_HR_MAX_BPM) {
         return;
@@ -132,8 +122,8 @@ static void vitals_push_nn_interval(float interval_ms)
         nn_count++;
     }
 
-    /* Ricalcola HR come media degli intervalli NN disponibili (piu' stabile
-     * del solo ultimo intervallo) */
+    /* Recalculate HR as average of available NN intervals (more stable
+     * than just the last interval) */
     float sum_ms = 0.0f;
     for (uint16_t i = 0; i < nn_count; i++) {
         sum_ms += nn_intervals_ms[i];
@@ -144,16 +134,16 @@ static void vitals_push_nn_interval(float interval_ms)
 }
 
 /**
- * @brief Rilevazione picchi sul segnale IR filtrato (banda cardiaca).
- * Usa una soglia adattiva basata sull'inviluppo di ampiezza stimato e un
- * controllo di rifrattarieta' (distanza minima tra picchi) per evitare
- * doppi conteggi su rumore ad alta frequenza.
+ * @brief Peak detection on filtered IR signal (cardiac band).
+ * Uses an adaptive threshold based on the estimated amplitude envelope and a
+ * refractoriness check (minimum distance between peaks) to avoid
+ * double counting on high frequency noise.
  *
- * @param ac_ir_filtered Campione corrente del segnale IR filtrato (AC).
+ * @param ac_ir_filtered Current sample of the filtered IR signal (AC).
  */
 static void vitals_detect_peak(float ac_ir_filtered)
 {
-    /* Aggiorna il massimo locale decadente per calcolare la soglia al 70% */
+    /* Update the decaying local maximum to calculate the 70% threshold */
     ac_ir_recent_max -= ac_ir_recent_max * VITALS_MAX_DECAY_RATE;
     if (ac_ir_filtered > ac_ir_recent_max) {
         ac_ir_recent_max = ac_ir_filtered;
@@ -161,9 +151,9 @@ static void vitals_detect_peak(float ac_ir_filtered)
 
     float threshold = VITALS_PEAK_THRESHOLD_RATIO * ac_ir_recent_max;
 
-    /* Rilevazione battito tramite massimo locale validato dalla soglia:
-     * il campione precedente e' maggiore sia del precedente ancora sia
-     * di quello attuale, ed e' superiore alla soglia. */
+    /* Beat detection via local maximum validated by threshold:
+     * the previous sample is greater than both the sample before it
+     * and the current one, and is above the threshold. */
     bool is_beat = (prev_sample_1 > prev_sample_2) && 
                    (prev_sample_1 > ac_ir_filtered) && 
                    (prev_sample_1 >= threshold);
@@ -172,8 +162,8 @@ static void vitals_detect_peak(float ac_ir_filtered)
         uint32_t min_distance_samples =
             (uint32_t)(VITALS_MIN_PEAK_DISTANCE_S * VITALS_FS_HZ);
 
-        /* sample_counter punta al campione corrente; il picco rilevato e'
-         * al campione precedente (sample_counter - 1) */
+        /* sample_counter points to the current sample; the detected peak is
+         * at the previous sample (sample_counter - 1) */
         uint32_t peak_idx = sample_counter - 1U;
 
         if (!last_peak_valid ||
@@ -194,9 +184,9 @@ static void vitals_detect_peak(float ac_ir_filtered)
 }
 
 /**
- * @brief Aggiorna le statistiche min/max della finestra SpO2 corrente per
- * RED e IR; allo scadere della finestra calcola R e lo converte in SpO2,
- * poi resetta la finestra.
+ * @brief Updates the min/max statistics of the current SpO2 window for
+ * RED and IR; at the end of the window it calculates R and converts it to SpO2,
+ * then resets the window.
  */
 static void vitals_update_spo2_window(float ac_red_filtered, float ac_ir_filtered,
                                        float dc_red_val, float dc_ir_val)
@@ -214,10 +204,10 @@ static void vitals_update_spo2_window(float ac_red_filtered, float ac_ir_filtere
     spo2_window_counter++;
 
     if (spo2_window_counter >= VITALS_SPO2_WINDOW_SAMPLES) {
-        float ac_red_pp = red_ac_max - red_ac_min; /* ampiezza picco-picco RED */
-        float ac_ir_pp  = ir_ac_max  - ir_ac_min;   /* ampiezza picco-picco IR */
+        float ac_red_pp = red_ac_max - red_ac_min; /* peak-to-peak amplitude RED */
+        float ac_ir_pp  = ir_ac_max  - ir_ac_min;   /* peak-to-peak amplitude IR */
 
-        /* Evita divisioni per zero / dati spazzatura (dito non appoggiato) */
+        /* Avoid division by zero / garbage data (finger not placed) */
         if (dc_red_val > 1.0f && dc_ir_val > 1.0f && ac_ir_pp > 1e-6f) {
             float ratio_red = ac_red_pp / dc_red_val;
             float ratio_ir  = ac_ir_pp  / dc_ir_val;
@@ -225,12 +215,7 @@ static void vitals_update_spo2_window(float ac_red_filtered, float ac_ir_filtere
             if (ratio_ir > 1e-9f) {
                 float R = ratio_red / ratio_ir;
 
-                /* Equazione polinomiale empirica standard (tipica per
-                 * sensori MAX3010x), da ricalibrare con un pulsossimetro
-                 * di riferimento per la massima precisione clinica:
-                 *   SpO2 = 110 - 25 * R
-                 * Clampata in [70, 100] per restare in range fisiologico
-                 * plausibile e scartare letture spurie. */
+                /* Empirical equation for SpO2 calculation */
                 float spo2_est = 110.0f - 25.0f * R;
                 if (spo2_est > 100.0f) spo2_est = 100.0f;
                 if (spo2_est < 70.0f)  spo2_est = 70.0f;
@@ -245,10 +230,10 @@ static void vitals_update_spo2_window(float ac_red_filtered, float ac_ir_filtere
 }
 
 /**
- * @brief Alimenta il buffer di respirazione con un nuovo campione (gia'
- * filtrato in banda 0.1-0.4Hz e decimato), e se il buffer e' pieno aggiorna
- * la stima di RR contando gli zero-crossing (da negativo a positivo) sulla
- * finestra disponibile.
+ * @brief Feeds the respiration buffer with a new sample (already
+ * filtered in 0.1-0.4Hz band and decimated), and if the buffer is full updates
+ * the RR estimation by counting zero-crossings (from negative to positive) on
+ * the available window.
  */
 static void vitals_update_respiration(float resp_sample_filtered)
 {
@@ -264,21 +249,19 @@ static void vitals_update_respiration(float resp_sample_filtered)
         resp_count++;
     }
 
-    /* Aspetta di avere una finestra sufficientemente lunga (almeno 30s)
-     * prima di stimare la RR, per avere almeno alcuni cicli respiratori
-     * completi anche a frequenza respiratoria bassa (6 resp/min = 10s/ciclo). */
+    /* Wait for a sufficient window (at least 30s) before estimating RR. */
     uint16_t min_samples_for_rr = (uint16_t)(30.0f * VITALS_RESP_FS_HZ);
     if (resp_count < min_samples_for_rr) {
         return;
     }
 
-    /* Rileva i picchi massimi locali sull'intero buffer disponibile,
-     * in ordine cronologico. Il buffer e' circolare: l'ordine
-     * cronologico parte da resp_write_idx se il buffer e' pieno, altrimenti da 0. */
+    /* Detects local maxima peaks over the entire available buffer,
+     * in chronological order. The buffer is circular: the chronological
+     * order starts from resp_write_idx if the buffer is full, otherwise from 0. */
     uint16_t start_idx = (resp_count < VITALS_RESP_BUFFER_LEN) ? 0 : resp_write_idx;
     uint16_t n = resp_count;
 
-    /* Trova il massimo globale nel buffer per calcolare la soglia di ampiezza */
+    /* Find the global maximum in the buffer to calculate the amplitude threshold */
     float max_val = 0.0f;
     for (uint16_t i = 0; i < n; i++) {
         uint16_t idx = (uint16_t)((start_idx + i) % VITALS_RESP_BUFFER_LEN);
@@ -314,7 +297,7 @@ static void vitals_update_respiration(float resp_sample_filtered)
         float breaths_per_second = (float)peaks / duration_s;
         float brpm = breaths_per_second * 60.0f;
 
-        /* Range fisiologico plausibile: 4-40 respiri/min */
+        /* Plausible physiological range: 4-40 breaths/min */
         if (brpm >= 4.0f && brpm <= 40.0f) {
             current_rr_brpm = brpm;
             current_rr_valid = true;
@@ -323,7 +306,7 @@ static void vitals_update_respiration(float resp_sample_filtered)
 }
 
 /* ========================================================================
- *  API PUBBLICA
+ *  PUBLIC API
  * ======================================================================== */
 
 void Vitals_Init(void)
@@ -373,7 +356,7 @@ void Vitals_ProcessSample(uint32_t raw_red, uint32_t raw_ir, float ac_red_filter
     float red_f = (float)raw_red;
     float ir_f  = (float)raw_ir;
 
-    /* --- Aggiornamento baseline DC (EMA) --- */
+    /* --- DC baseline update (EMA) --- */
     if (!dc_initialized) {
         dc_red = red_f;
         dc_ir  = ir_f;
@@ -389,13 +372,13 @@ void Vitals_ProcessSample(uint32_t raw_red, uint32_t raw_ir, float ac_red_filter
 
     sample_counter++;
 
-    /* --- HR / HRV: peak detection sul canale IR filtrato --- */
+    /* --- HR / HRV: peak detection on the filtered IR channel --- */
     vitals_detect_peak(ac_ir_filtered);
 
-    /* --- SpO2: aggiornamento finestra R-ratio --- */
+    /* --- SpO2: R-ratio window update --- */
     vitals_update_spo2_window(ac_red_filtered, ac_ir_filtered, dc_red, dc_ir);
 
-    /* --- RR: filtro passa-banda 0.1-0.4Hz sulla baseline (DC) IR --- */
+    /* --- RR: 0.1-0.4Hz band-pass filter on the IR (DC) baseline --- */
     float resp_sample_filtered = 0.0f;
     float dc_ir_in = dc_ir;
     arm_biquad_cascade_df1_f32(&resp_filter_inst, &dc_ir_in, &resp_sample_filtered, 1);
@@ -426,7 +409,7 @@ bool Vitals_GetHRV(float *sdnn_ms, float *rmssd_ms)
         return false;
     }
 
-    /* SDNN: deviazione standard degli intervalli NN */
+    /* SDNN: standard deviation of the NN intervals */
     float sum = 0.0f;
     for (uint16_t i = 0; i < nn_count; i++) {
         sum += nn_intervals_ms[i];
@@ -440,9 +423,9 @@ bool Vitals_GetHRV(float *sdnn_ms, float *rmssd_ms)
     }
     float sdnn = sqrtf(sq_sum / (float)nn_count);
 
-    /* RMSSD: root mean square delle differenze successive tra intervalli NN.
-     * Va calcolato sulla sequenza in ordine cronologico: ricostruiamo
-     * l'ordine a partire dall'indice di scrittura circolare. */
+    /* RMSSD: root mean square of successive differences between NN intervals.
+     * Must be calculated on the chronological sequence: we reconstruct
+     * the order starting from the circular write index. */
     uint16_t start_idx = (nn_count < VITALS_HRV_NN_BUFFER_LEN) ? 0 : nn_write_idx;
     float sq_diff_sum = 0.0f;
     uint16_t diff_count = 0;

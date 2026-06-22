@@ -14,7 +14,7 @@
 #include <stdint.h>
 
 // I2C Addresses
-#define MAX30101_WRITE_ADDRESS  0xAE //Scod: ho invertito AF e AE che li avevamo confusi
+#define MAX30101_WRITE_ADDRESS  0xAE //Scod: I swapped AF and AE since we confused them
 #define MAX30101_READ_ADDRESS   0xAF // 0xAE >> 1 and 0xAF >> 1 are the same address
 #define MAX30101_TIMEOUT        100
 // --- Register Configuration Values ---
@@ -80,6 +80,6 @@ void MAX30101_LED_Config(uint8_t led_pa[LED_PULSE_N_REG], uint8_t multi_led[MULT
  * @param raw_data Pointer to an array used to store raw HEALTH data
  * @param read_ptr Pointer to last read position of FIFO
  */
-uint8_t MAX30101_Read_Data(HEALTH_data acc_data[][32], uint8_t *raw_data, uint8_t *read_ptr); //Scod: read_ptr in teoria non necessario visto che il puntatore cambia da solo
+uint8_t MAX30101_Read_Data(HEALTH_data acc_data[][32], uint8_t *raw_data, uint8_t *read_ptr); //Scod: read_ptr theoretically not necessary since the pointer changes by itself
 
 #endif /* __MAX30101_DRIVER_H__ */

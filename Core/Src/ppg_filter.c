@@ -8,7 +8,7 @@
 #endif
 
 #define PPG_BUTTERWORTH_ORDER 12
-#define PPG_FILTER_STAGES (PPG_BUTTERWORTH_ORDER) // 6 LPF + 6 HPF = 12 stadi
+#define PPG_FILTER_STAGES (PPG_BUTTERWORTH_ORDER) // 6 LPF + 6 HPF = 12 stages
 
 static float32_t ppg_red_filter_state[4 * PPG_FILTER_STAGES];
 static float32_t ppg_ir_filter_state[4 * PPG_FILTER_STAGES];
@@ -16,7 +16,7 @@ static arm_biquad_casd_df1_inst_f32 ppg_red_filter_inst;
 static arm_biquad_casd_df1_inst_f32 ppg_ir_filter_inst;
 static float32_t ppg_filter_coeffs[5 * PPG_FILTER_STAGES];
 
-static float32_t dc_baseline_red = -1.0f; // Usato solo come offset iniziale per ridurre il transitorio
+static float32_t dc_baseline_red = -1.0f; // Used only as initial offset to reduce transient
 static float32_t dc_baseline_ir = -1.0f;
 
 void compute_butterworth_biquads(int order, double fc, double fs, bool is_highpass, float32_t *coeffs_out) {
@@ -71,11 +71,11 @@ void PPG_Filter_Init(void) {
  * @return The filtered output sample.
  */
 void PPG_Filter_ProcessSamples(float32_t raw_red, float32_t raw_ir, float32_t *filtered_red, float32_t *filtered_ir) {
-	// Rilevatore dito: se il segnale grezzo IR è sotto 1000, il dito non è appoggiato
+	// Finger detection: if raw IR signal is below 1000, the finger is not placed
 	if (raw_ir < 1000.0f) {
 		dc_baseline_red = -1.0f;
 		dc_baseline_ir = -1.0f;
-		// Resetta lo stato interno del filtro Biquad per evitare ringing o spike
+		// Reset internal state of the Biquad filter to avoid ringing or spikes
 		for (int i = 0; i < 4 * PPG_FILTER_STAGES; i++) {
 			ppg_red_filter_state[i] = 0.0f;
 			ppg_ir_filter_state[i] = 0.0f;
@@ -85,25 +85,24 @@ void PPG_Filter_ProcessSamples(float32_t raw_red, float32_t raw_ir, float32_t *f
 		return;
 	}
 
-	// Inizializza la baseline al primo campione valido per evitare un lungo transitorio
+	// Initialize baseline to the first valid sample to avoid a long transient
 	if (dc_baseline_ir == -1.0f) {
 		dc_baseline_red = raw_red;
 		dc_baseline_ir = raw_ir;
 	}
 
-	// Rimuoviamo l'offset DC grezzo per minimizzare il gradino iniziale in ingresso al filtro
+	// Remove the raw DC offset to minimize the initial step input to the filter
 	float32_t ac_red = raw_red - dc_baseline_red;
 	float32_t ac_ir = raw_ir - dc_baseline_ir;
-	
+
 	float32_t out_red = 0.0f;
 	float32_t out_ir = 0.0f;
 
-	// Applica il filtro passa-banda 12esimo ordine (0.6 - 10 Hz)
+	// Apply the 12th order band-pass filter (0.6 - 10 Hz)
 	arm_biquad_cascade_df1_f32(&ppg_red_filter_inst, &ac_red, &out_red, 1);
 	arm_biquad_cascade_df1_f32(&ppg_ir_filter_inst, &ac_ir, &out_ir, 1);
 
-	// Siccome il filtro 12esimo ordine è molto reattivo al rumore da movimento,
-	// potremmo avere spike. Limitarli (o riavviare il filtro) aiuta.
+	// Limiting spikes (happening when the finger is placed or removed)
 	if (out_ir > 100.0f || out_ir < -100.0f || out_red > 100.0f || out_red < -100.0f) {
 		dc_baseline_red = raw_red;
 		dc_baseline_ir = raw_ir;

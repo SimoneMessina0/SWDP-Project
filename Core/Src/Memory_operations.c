@@ -16,19 +16,8 @@
 #include "Memory_operations.h"
 
 NAND_info data;
-//void write_packet(uint8_t sample, RTC_TimeTypeDef sTime, uint8_t *magnetometer, uint8_t *pressure, uint8_t *temp, uint8_t *gyroscope,uint8_t *accelerometer, uint8_t *gyroscope2,uint8_t *accelerometer2,uint8_t *ppg_sample, uint8_t *NAND_packet);
-
-// todo:
-/*
- * All'inizio faccio un spi_nand_init(); che non cancella il contenuto della memoria
- * Il flusso di operazioni sarà: inizializzo, leggo tutto, identifico i bad blocks, erase tutto, scrivo tutto
- * Idea: uso il primo blocco disponibile per salvarmi il blocco e la pagina a cui sono arrivata -> può avere dei problemi.
- */
 
 void find_bad_blocks(uint16_t *bad_blocks){
-	// inizializzo bad_blocks con -1
-	// metto l'indice del good_block nel vettore
-	// i++ e prendo il numero scritto dentro nel vettore, non il suo indice quando devo andare a scrivere
 
 	read_address_t blocco;
 	blocco.block=0;
@@ -51,7 +40,7 @@ void find_bad_blocks(uint16_t *bad_blocks){
 	}
 }
 
-// Questo da tenere così
+
 void erase_good_blocks(uint8_t *bad_blocks){
 	read_address_t blocco;
 	blocco.block=0;
