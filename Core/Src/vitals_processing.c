@@ -15,21 +15,6 @@
 #include <string.h>
 
 /* ========================================================================
- *  RESPIRATORY FILTER (band-pass 0.1 - 0.4 Hz, on the IR DC baseline)
- *  2 stage biquad Butterworth, effective fs = VITALS_FS_HZ (100 Hz). The
- *  0.1-0.4 Hz band corresponds to 6-24 breaths/minute, physiological range
- *  at rest / light effort.
- * ======================================================================== */
-
-#define VITALS_RESP_FILTER_STAGES 2
-
-static float32_t resp_filter_state[4 * VITALS_RESP_FILTER_STAGES];
-static arm_biquad_casd_df1_inst_f32 resp_filter_inst;
-
-/* Butterworth 2 stage coefficients, fc1=0.4Hz (LPF) + fc2=0.1Hz (HPF), will be calculated dynamically for fs=800Hz. */
-static float32_t resp_filter_coeffs[5 * VITALS_RESP_FILTER_STAGES];
-
-/* ========================================================================
  *  INTERNAL STATE: DC TRACKER (exponential moving average)
  * ======================================================================== */
 
@@ -78,23 +63,6 @@ static uint32_t spo2_window_counter = 0;
 
 static float current_spo2 = -1.0f;
 static bool current_spo2_valid = false;
-
-/* ========================================================================
- *  INTERNAL STATE: RESPIRATION (RR)
- * ======================================================================== */
-
-/* Filtered respiration signal buffer (decimated to reduce memory
- * cost: 1 sample every 10 -> 10 Hz effective, 0.1-0.4Hz band
- * is well below Nyquist even at 10Hz). */
-static float resp_buffer[VITALS_RESP_BUFFER_LEN];
-static uint16_t resp_write_idx = 0;
-static uint16_t resp_count = 0; /* how many valid samples are in buffer (saturates) */
-static uint8_t resp_decim_counter = 0;
-#define VITALS_RESP_DECIMATION 80U /* 800Hz / 80 = 10 Hz */
-#define VITALS_RESP_FS_HZ (VITALS_FS_HZ / (float)VITALS_RESP_DECIMATION)
-
-static float current_rr_brpm = -1.0f;
-static bool current_rr_valid = false;
 
 /* ========================================================================
  *  PRIVATE FUNCTIONS
@@ -223,92 +191,12 @@ static void vitals_update_spo2_window(float ac_red_filtered, float ac_ir_filtere
 	}
 }
 
-/**
- * @brief Feeds the respiration buffer with a new sample (already
- * filtered in 0.1-0.4Hz band and decimated), and if the buffer is full updates
- * the RR estimation by counting zero-crossings (from negative to positive) on
- * the available window.
- */
-static void vitals_update_respiration(float resp_sample_filtered) {
-	resp_decim_counter++;
-	if (resp_decim_counter < VITALS_RESP_DECIMATION) {
-		return;
-	}
-	resp_decim_counter = 0;
-
-	resp_buffer[resp_write_idx] = resp_sample_filtered;
-	resp_write_idx = (uint16_t)((resp_write_idx + 1U) % VITALS_RESP_BUFFER_LEN);
-	if (resp_count < VITALS_RESP_BUFFER_LEN) {
-		resp_count++;
-	}
-
-	/* Wait for a sufficient window (at least 30s) before estimating RR. */
-	uint16_t min_samples_for_rr = (uint16_t)(30.0f * VITALS_RESP_FS_HZ);
-	if (resp_count < min_samples_for_rr) {
-		return;
-	}
-
-	/* Detects local maxima peaks over the entire available buffer,
-	 * in chronological order. The buffer is circular: the chronological
-	 * order starts from resp_write_idx if the buffer is full, otherwise from 0. */
-	uint16_t start_idx = (resp_count < VITALS_RESP_BUFFER_LEN) ? 0 : resp_write_idx;
-	uint16_t n = resp_count;
-
-	/* Find the global maximum in the buffer to calculate the amplitude threshold */
-	float max_val = 0.0f;
-	for (uint16_t i = 0; i < n; i++) {
-		uint16_t idx = (uint16_t)((start_idx + i) % VITALS_RESP_BUFFER_LEN);
-		if (resp_buffer[idx] > max_val) {
-			max_val = resp_buffer[idx];
-		}
-	}
-
-	float threshold = 0.50f * max_val;
-	uint16_t peaks = 0;
-	int32_t last_peak_idx = -1;
-	uint32_t min_distance_samples = (uint32_t)(0.2f * VITALS_RESP_FS_HZ);
-
-	for (uint16_t i = 1; i < n - 1; i++) {
-		uint16_t idx_prev = (uint16_t)((start_idx + i - 1) % VITALS_RESP_BUFFER_LEN);
-		uint16_t idx_curr = (uint16_t)((start_idx + i) % VITALS_RESP_BUFFER_LEN);
-		uint16_t idx_next = (uint16_t)((start_idx + i + 1) % VITALS_RESP_BUFFER_LEN);
-
-		float val_prev = resp_buffer[idx_prev];
-		float val_curr = resp_buffer[idx_curr];
-		float val_next = resp_buffer[idx_next];
-
-		if (val_curr > val_prev && val_curr > val_next && val_curr >= threshold) {
-			if (last_peak_idx == -1 || (i - last_peak_idx) >= min_distance_samples) {
-				peaks++;
-				last_peak_idx = i;
-			}
-		}
-	}
-
-	float duration_s = (float)(n - 1) / VITALS_RESP_FS_HZ;
-	if (duration_s > 0.0f && peaks > 0) {
-		float breaths_per_second = (float)peaks / duration_s;
-		float brpm = breaths_per_second * 60.0f;
-
-		/* Plausible physiological range: 4-40 breaths/min */
-		if (brpm >= 4.0f && brpm <= 40.0f) {
-			current_rr_brpm = brpm;
-			current_rr_valid = true;
-		}
-	}
-}
 
 /* ========================================================================
  *  PUBLIC API
  * ======================================================================== */
 
 void Vitals_Init(void) {
-	compute_butterworth_biquads(2, 0.4, 800.0, false, &resp_filter_coeffs[0]);
-	compute_butterworth_biquads(2, 0.1, 800.0, true, &resp_filter_coeffs[5]);
-
-	arm_biquad_cascade_df1_init_f32(&resp_filter_inst, VITALS_RESP_FILTER_STAGES,
-									resp_filter_coeffs, resp_filter_state);
-
 	dc_red = 0.0f;
 	dc_ir = 0.0f;
 	dc_initialized = false;
@@ -332,13 +220,6 @@ void Vitals_Init(void) {
 	spo2_window_counter = 0;
 	current_spo2 = -1.0f;
 	current_spo2_valid = false;
-
-	memset(resp_buffer, 0, sizeof(resp_buffer));
-	resp_write_idx = 0;
-	resp_count = 0;
-	resp_decim_counter = 0;
-	current_rr_brpm = -1.0f;
-	current_rr_valid = false;
 }
 
 void Vitals_ProcessSample(uint32_t raw_red, uint32_t raw_ir, float ac_red_filtered, float ac_ir_filtered) {
@@ -366,12 +247,6 @@ void Vitals_ProcessSample(uint32_t raw_red, uint32_t raw_ir, float ac_red_filter
 
 	/* --- SpO2: R-ratio window update --- */
 	vitals_update_spo2_window(ac_red_filtered, ac_ir_filtered, dc_red, dc_ir);
-
-	/* --- RR: 0.1-0.4Hz band-pass filter on the IR (DC) baseline --- */
-	float resp_sample_filtered = 0.0f;
-	float dc_ir_in = dc_ir;
-	arm_biquad_cascade_df1_f32(&resp_filter_inst, &dc_ir_in, &resp_sample_filtered, 1);
-	vitals_update_respiration(resp_sample_filtered);
 }
 
 bool Vitals_GetHR(float *hr_bpm) {
@@ -432,11 +307,7 @@ bool Vitals_GetHRV(float *sdnn_ms, float *rmssd_ms) {
 	return true;
 }
 
-bool Vitals_GetRR(float *rr_brpm) {
-	if (rr_brpm == NULL) return false;
-	*rr_brpm = current_rr_valid ? current_rr_brpm : -1.0f;
-	return current_rr_valid;
-}
+
 
 void Vitals_GetAllResults(Vitals_Results *out) {
 	if (out == NULL) return;
@@ -444,5 +315,4 @@ void Vitals_GetAllResults(Vitals_Results *out) {
 	out->hr_valid = Vitals_GetHR(&out->hr_bpm);
 	out->spo2_valid = Vitals_GetSpO2(&out->spo2_percent);
 	out->hrv_valid = Vitals_GetHRV(&out->hrv_sdnn_ms, &out->hrv_rmssd_ms);
-	out->rr_valid = Vitals_GetRR(&out->rr_brpm);
 }

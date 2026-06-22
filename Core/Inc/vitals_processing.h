@@ -27,8 +27,9 @@
 #ifndef VITALS_PROCESSING_H
 #define VITALS_PROCESSING_H
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,22 +39,22 @@ extern "C" {
  *  CONFIGURAZIONE GENERALE
  * ======================================================================== */
 
-#define VITALS_FS_HZ                800.0f   /* PPG sampling frequency (Hz), must match TIM2 */
+#define VITALS_FS_HZ 800.0f /* PPG sampling frequency (Hz), must match TIM2 */
 
 /* --- HR / peak detection --- */
-#define VITALS_HR_MIN_BPM           35.0f
-#define VITALS_HR_MAX_BPM           300.0f /* 300 bpm => refractory period 0.2s */
+#define VITALS_HR_MIN_BPM 35.0f
+#define VITALS_HR_MAX_BPM 300.0f /* 300 bpm => refractory period 0.2s */
 /* Minimum accepted distance between two peaks, derived from HR_MAX_BPM */
-#define VITALS_MIN_PEAK_DISTANCE_S  (60.0f / VITALS_HR_MAX_BPM)
+#define VITALS_MIN_PEAK_DISTANCE_S (60.0f / VITALS_HR_MAX_BPM)
 
 /* --- HRV --- */
-#define VITALS_HRV_NN_BUFFER_LEN    30U   /* number of NN intervals (RR-to-RR) stored for SDNN/RMSSD */
+#define VITALS_HRV_NN_BUFFER_LEN 30U /* number of NN intervals (RR-to-RR) stored for SDNN/RMSSD */
 
 /* --- SpO2 --- */
-#define VITALS_SPO2_WINDOW_SAMPLES  800U  /* window (samples) on which to calculate AC/DC for each SpO2 estimate, ~1s @800Hz */
+#define VITALS_SPO2_WINDOW_SAMPLES 800U /* window (samples) on which to calculate AC/DC for each SpO2 estimate, ~1s @800Hz */
 
 /* --- RR (respiration) --- */
-#define VITALS_RESP_BUFFER_LEN      512U  /* decimated samples buffer for breath estimation (~ few minutes at decimated fs) */
+#define VITALS_RESP_BUFFER_LEN 512U /* decimated samples buffer for breath estimation (~ few minutes at decimated fs) */
 
 /* ========================================================================
  *  STRUTTURE DATI
@@ -61,16 +62,14 @@ extern "C" {
 
 /** Aggregated result, convenient to send via BLE/USB or save to NAND. */
 typedef struct {
-    float    hr_bpm;          /* Beats per minute, -1 if not available */
-    float    spo2_percent;    /* SpO2 percentage, -1 if not available */
-    float    hrv_sdnn_ms;     /* SDNN in milliseconds, -1 if not available */
-    float    hrv_rmssd_ms;    /* RMSSD in milliseconds, -1 if not available */
-    float    rr_brpm;         /* Breaths per minute, -1 if not available */
+	float hr_bpm;		/* Beats per minute, -1 if not available */
+	float spo2_percent; /* SpO2 percentage, -1 if not available */
+	float hrv_sdnn_ms;	/* SDNN in milliseconds, -1 if not available */
+	float hrv_rmssd_ms; /* RMSSD in milliseconds, -1 if not available */
 
-    bool     hr_valid;
-    bool     spo2_valid;
-    bool     hrv_valid;
-    bool     rr_valid;
+	bool hr_valid;
+	bool spo2_valid;
+	bool hrv_valid;
 
 } Vitals_Results;
 
@@ -124,16 +123,6 @@ bool Vitals_GetSpO2(float *spo2_percent);
  * @return true if there are at least 2 NN intervals available.
  */
 bool Vitals_GetHRV(float *sdnn_ms, float *rmssd_ms);
-
-/**
- * @brief Returns the last respiratory rate estimate.
- * @param rr_brpm Output pointer (breaths/min).
- * @return true if the value is valid (respiration buffer full and spectral peak/
- * zero-crossing found in band).
- */
-bool Vitals_GetRR(float *rr_brpm);
-
-
 
 /**
  * @brief Convenience helper: fills a Vitals_Results struct with all the

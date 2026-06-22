@@ -366,18 +366,17 @@ int main(void) {
 					slow_vitals_report_counter = 0;
 					Vitals_GetAllResults(&vitals_results);
 
-					uint8_t slow_payload[18] = {0};
+					uint8_t slow_payload[14] = {0};
 					if (vitals_results.spo2_valid) memcpy(&slow_payload[0], &vitals_results.spo2_percent, 4);
 					if (vitals_results.hrv_valid) {
 						memcpy(&slow_payload[4], &vitals_results.hrv_sdnn_ms, 4);
 						memcpy(&slow_payload[8], &vitals_results.hrv_rmssd_ms, 4);
 					}
-					if (vitals_results.rr_valid) memcpy(&slow_payload[12], &vitals_results.rr_brpm, 4);
-					memcpy(&slow_payload[16], raw_temp, 2);
+					memcpy(&slow_payload[12], raw_temp, 2);
 
-					BLE_SendPacket(DATA_TYPE_SLOW_VITALS, slow_payload, 18);
+					BLE_SendPacket(DATA_TYPE_SLOW_VITALS, slow_payload, 14);
 					if (current_state == STATE_ACQUISITION) {
-						write_packet(DATA_TYPE_SLOW_VITALS, timestamp, slow_payload, 18);
+						write_packet(DATA_TYPE_SLOW_VITALS, timestamp, slow_payload, 14);
 					}
 				}
 			}
