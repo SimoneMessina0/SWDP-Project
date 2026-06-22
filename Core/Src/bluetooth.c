@@ -82,7 +82,7 @@ void BLE_Initialize(void) {
     // Reboot the module for the new settings to take effect
     uint8_t reboot_command[] = "R,1\r";
     BLE_SendData(reboot_command, sizeof(reboot_command) - 1);
-    HAL_Delay(100);
+    HAL_Delay(2000); // RN4871 needs ~1-2s to fully reboot before accepting commands
 
     // Exit Command Mode and return to Data Mode
     exit_command_mode();
@@ -221,7 +221,7 @@ void BLE_ReceiveData(uint8_t* data, uint8_t data_length) {
 #define BLE_TX_RING_BUFFER_SIZE 64
 
 typedef struct {
-    uint8_t buffer[BLE_TX_RING_BUFFER_SIZE][PACKET_LENGTH];
+    uint8_t buffer[BLE_TX_RING_BUFFER_SIZE][MAX_PACKET_LENGTH];
     uint8_t length[BLE_TX_RING_BUFFER_SIZE];
     volatile uint8_t head;
     volatile uint8_t tail;
@@ -257,14 +257,14 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
  * @param value The 32-bit value to be sent.
  */
 void BLE_SendPacket(BLE_DataType ble_data_type, uint8_t* data_buffer, uint8_t data_length) {
-    uint8_t ble_packet[PACKET_LENGTH];
+    uint8_t total_length = data_length + 3;
+    if (total_length > MAX_PACKET_LENGTH) return; // Safety check
+
+    uint8_t ble_packet[MAX_PACKET_LENGTH];
 
     // Initialize the packet buffer
     ble_packet[0] = '{';
-    ble_packet[PACKET_LENGTH - 1] = '}';
-    for (uint8_t i = 1; i < PACKET_LENGTH - 1; i++) {
-        ble_packet[i] = 0;
-    }
+    ble_packet[total_length - 1] = '}';
 
     // Byte 1: Data type identifier
     switch (ble_data_type) {
@@ -284,21 +284,18 @@ void BLE_SendPacket(BLE_DataType ble_data_type, uint8_t* data_buffer, uint8_t da
             ble_packet[1] = 'U'; // Unknown data type
             break;
     }
-    // Copy payload safely (limit to available packet space)
-    uint8_t max_payload = PACKET_LENGTH - 3; // bytes available starting at index 2
-    uint8_t copy_len = data_length;
-    if (copy_len > max_payload) copy_len = max_payload;
-    for (uint8_t i = 0; i < copy_len; i++) {
+    // Copy payload
+    for (uint8_t i = 0; i < data_length; i++) {
         ble_packet[i + 2] = data_buffer[i];
     }
 
     // Asynchronous send using Ring Buffer
     __disable_irq();
     if (tx_ring_buffer.count < BLE_TX_RING_BUFFER_SIZE) {
-        for (uint8_t i = 0; i < sizeof(ble_packet); i++) {
+        for (uint8_t i = 0; i < total_length; i++) {
             tx_ring_buffer.buffer[tx_ring_buffer.head][i] = ble_packet[i];
         }
-        tx_ring_buffer.length[tx_ring_buffer.head] = sizeof(ble_packet);
+        tx_ring_buffer.length[tx_ring_buffer.head] = total_length;
         
         tx_ring_buffer.head = (tx_ring_buffer.head + 1) % BLE_TX_RING_BUFFER_SIZE;
         tx_ring_buffer.count++;

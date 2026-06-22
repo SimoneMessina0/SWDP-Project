@@ -14,7 +14,7 @@
 
 // --- Constants Definitions ---
 // These are standard values used for the BLE communication packets and timeouts.
-#define PACKET_LENGTH 24    // Maximum length of a data packet
+#define MAX_PACKET_LENGTH 24  // Maximum length of a data packet
 #define TEXT_LENGTH 500     // Maximum length for text strings
 #define UART_TIMEOUT 1000   // Timeout in milliseconds for UART operations
 

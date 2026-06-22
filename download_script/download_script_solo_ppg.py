@@ -167,7 +167,7 @@ def process_bin_file(bin_filename, csv_filename=None):
 def gui_select_com_and_folder():
     """Apre una piccola GUI per selezionare COM e cartella."""
     root = Tk()
-    root.title("IMU Data Logger - Configuration")
+    root.title("Wearable Monitor - Configuration")
     root.geometry("400x400")
     root.resizable(False, False)
 
@@ -213,7 +213,7 @@ def main():
         print("❌ Application Stopped.")
         return
 
-    base_filename = datetime.now().strftime("IMUData_%Y%m%d_%H%M%S")
+    base_filename = datetime.now().strftime("WearableData_%Y%m%d_%H%M%S")
     bin_filename = os.path.join(save_path, f"{base_filename}.bin")
     csv_filename = os.path.join(save_path, f"{base_filename}_imu.csv")
 

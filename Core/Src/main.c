@@ -4,7 +4,7 @@
  * @file           : main.c
  * @brief          : Main application file for SWDP_Project_A4 project.
  ******************************************************************************
- * @functionality  : This firmware implements a complete Data Logger for the on board IMU.
+ * @functionality  : This firmware implements a complete Wearable Monitor.
  * @details        : The application operates using a State Machine triggered by a
  * single USER BUTTON. It performs three primary tasks:
  * 1. Real-time Acquisition: Reads Accelerometer/Gyroscope data
@@ -40,7 +40,6 @@
 #include "string.h"
 #include "vitals_processing.h"
 #include <stdint.h>
-
 
 /* USER CODE END Includes */
 
@@ -106,8 +105,6 @@ uint16_t skin_timer = 0;
 
 // Risultati correnti dei vitali calcolati in hardware
 static Vitals_Results vitals_results;
-static uint16_t vitals_report_decimation_counter = 0;
-#define VITALS_REPORT_DECIMATION 200U /* invia/aggiorna 1 volta al secondo @200Hz */
 
 uint8_t read_ptr_fifo;
 
@@ -305,7 +302,9 @@ int main(void) {
 			uint8_t imu_payload[12];
 			memcpy(&imu_payload[0], raw_accelerometer, 6);
 			memcpy(&imu_payload[6], raw_gyroscope, 6);
+
 			BLE_SendPacket(DATA_TYPE_IMU_COMBINED, imu_payload, 12);
+
 			if (current_state == STATE_ACQUISITION) {
 				write_packet(DATA_TYPE_IMU_COMBINED, timestamp, imu_payload, 12);
 			}
@@ -338,12 +337,12 @@ int main(void) {
 				ble_ppg_decimation++;
 				if (ble_ppg_decimation >= 32) {
 					ble_ppg_decimation = 0;
-					BLE_SendPacket(DATA_TYPE_PPG, (uint8_t *)&ppg_filtered_ir, sizeof(float32_t));
+					BLE_SendPacket(DATA_TYPE_PPG, (uint8_t *)&ppg_filtered_ir, sizeof(ppg_filtered_ir));
 				}
 
 				// 800 Hz: PPG Logging in Memory
 				if (current_state == STATE_ACQUISITION) {
-					write_packet(DATA_TYPE_PPG, timestamp, (uint8_t *)&ppg_filtered_ir, sizeof(float32_t));
+					write_packet(DATA_TYPE_PPG, timestamp, (uint8_t *)&ppg_filtered_ir, sizeof(ppg_filtered_ir));
 				}
 
 				// 1 Hz: HR

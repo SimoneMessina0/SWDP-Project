@@ -5,7 +5,6 @@
 #include "string.h"
 #include <stdint.h>
 
-
 extern I2C_HandleTypeDef hi2c3;
 
 // --- Private Function Prototypes (Helper Functions) ---
