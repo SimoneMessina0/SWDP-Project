@@ -191,7 +191,6 @@ static void vitals_update_spo2_window(float ac_red_filtered, float ac_ir_filtere
 	}
 }
 
-
 /* ========================================================================
  *  PUBLIC API
  * ======================================================================== */
@@ -306,8 +305,6 @@ bool Vitals_GetHRV(float *sdnn_ms, float *rmssd_ms) {
 	*rmssd_ms = rmssd;
 	return true;
 }
-
-
 
 void Vitals_GetAllResults(Vitals_Results *out) {
 	if (out == NULL) return;

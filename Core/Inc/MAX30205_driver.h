@@ -18,7 +18,12 @@
 // The I2C slave address of the MAX30205 is 0x6B (7-bit format).
 // This is the address to be used with the HAL library functions.
 #define MAX30205_I2C_ADDR 0x90 
-#define MAX30205_TIMEOUT   100 // Timeout in milliseconds for I2C operations (lo teniamo?)
+#define MAX30205_TIMEOUT   10 // Timeout in milliseconds for I2C operations
+
+// --- Return Status Codes ---
+#define MAX30205_STATUS_BUSY  0
+#define MAX30205_STATUS_OK    1
+#define MAX30205_STATUS_ERROR 2
 
 // --- Register Addresses ---
 // These are the addresses of the key registers used to configure and read the MAX30205.
@@ -40,9 +45,10 @@ void MAX30205_Start_Conversion();
 
 /**
  * @brief Extracts the clinical temperature from the sensor and converts it to degrees Celsius.
- * @param hi2c Pointer to the I2C handle used for communication with the sensor
  * @param temperature Pointer to a float variable where the read temperature value will be stored in degrees Celsius.
+ * @param raw_to_mem Pointer to 2-byte array to store raw temperature bytes.
+ * @return 1 if conversion completed and temperature read, 0 otherwise.
  */
-void MAX30205_Read_Temp(float *temperature, uint8_t *raw_to_mem, bool conversion_status);
+uint8_t MAX30205_Read_Temp(float *temperature, uint8_t *raw_to_mem);
 
 #endif /* __MAX30205_DRIVER_H__ */

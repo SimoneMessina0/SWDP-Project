@@ -102,6 +102,7 @@ uint8_t raw_health[3 * NUMBER_OF_ACTIVE_LEDS * 32] = {0};
 uint8_t raw_temp[2];
 
 uint16_t skin_timer = 0;
+static uint8_t temp_conversion_in_progress = 0;
 
 // Risultati correnti dei vitali calcolati in hardware
 static Vitals_Results vitals_results;
@@ -291,8 +292,14 @@ int main(void) {
 			// --- Data Acquisition ---
 			if (skin_timer == 0) {
 				MAX30205_Start_Conversion();
-			} else if (skin_timer == 1000) {
-				MAX30205_Read_Temp(&skin_temp, raw_temp, 1);
+				temp_conversion_in_progress = 1;
+			}
+
+			if (temp_conversion_in_progress) {
+				uint8_t temp_status = MAX30205_Read_Temp(&skin_temp, raw_temp);
+				if (temp_status == MAX30205_STATUS_OK || temp_status == MAX30205_STATUS_ERROR || skin_timer > 20) {
+					temp_conversion_in_progress = 0;
+				}
 			}
 
 			// Read and transmit IMU at 100Hz (every loop iteration)
@@ -311,7 +318,7 @@ int main(void) {
 
 			uint8_t available_samples = MAX30101_Read_Data(hr_data, raw_health, &read_ptr_fifo);
 
-			if (skin_timer == 1000)
+			if (skin_timer >= 1000)
 				skin_timer = 0;
 			else
 				skin_timer++;

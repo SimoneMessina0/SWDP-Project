@@ -37,21 +37,28 @@ void MAX30205_Start_Conversion() {
 /**
  * @brief Reads the clinical temperature from the sensor and converts it to degrees Celsius.
  */
-void MAX30205_Read_Temp(float *temperature, uint8_t *raw_to_mem, bool conversion_status) {
+uint8_t MAX30205_Read_Temp(float *temperature, uint8_t *raw_to_mem) {
 	uint8_t buffer[2];
-	uint8_t is_conversion_finished = 0;
+	uint8_t config_reg = 0;
 	int16_t raw_temp = 0;
-	sensor_read_register(MAX30205_CONFIGURATION, &is_conversion_finished, 1);
-	if (is_conversion_finished == 0b00000001) {
-		sensor_read_register(MAX30205_TEMPERATURE, buffer, 2);
-		raw_temp = (int16_t)((buffer[0] << 8) | buffer[1]);
-		raw_to_mem[0] = buffer[0];
-		raw_to_mem[1] = buffer[1];
-		conversion_status = false;
-
-		// Conversion of the raw temperature value to degrees Celsius
-		*temperature = (float)raw_temp * 0.00390625f;
+	if (!sensor_read_register(MAX30205_CONFIGURATION, &config_reg, 1)) {
+		return MAX30205_STATUS_ERROR;
 	}
+	// Check if the OS (One-Shot) bit (bit 7) has cleared back to 0.
+	if ((config_reg & 0b10000000) == 0) {
+		if (sensor_read_register(MAX30205_TEMPERATURE, buffer, 2)) {
+			raw_temp = (int16_t)((buffer[0] << 8) | buffer[1]);
+			raw_to_mem[0] = buffer[0];
+			raw_to_mem[1] = buffer[1];
+
+			// Conversion of the raw temperature value to degrees Celsius
+			*temperature = (float)raw_temp * 0.00390625f;
+			return MAX30205_STATUS_OK;
+		} else {
+			return MAX30205_STATUS_ERROR;
+		}
+	}
+	return MAX30205_STATUS_BUSY;
 }
 
 // --- Private Function Implementations (Helper Functions) ---
